@@ -1,0 +1,53 @@
+[tasks.install]
+description = "Install JavaScript dependencies"
+run = "bun install --silent"
+
+[tasks.build]
+description = "Bundle the app into dist/"
+run = "bun run build.ts"
+
+[tasks.dev]
+description = "Rebuild dist/ on every source change (run serve in another terminal)"
+run = "bun run build.ts --watch"
+
+[tasks.serve]
+description = "Serve dist/ and the print bridge on http://localhost:8790 (USB printer)"
+run = "uv run -q bridge.py"
+
+[tasks.serve-bt]
+description = "Serve with the printer over Bluetooth, found automatically"
+run = """
+find() { bluetoothctl devices | grep -m1 -oE '([0-9A-F]{2}:){5}[0-9A-F]{2} T0[0-9]' | cut -d' ' -f1; }
+addr=$(find)
+[ -n "$addr" ] || { bluetoothctl --timeout 10 scan on >/dev/null 2>&1; addr=$(find); }
+[ -n "$addr" ] || { echo "printer not found over Bluetooth; is it on?" >&2; exit 1; }
+uv run -q bridge.py --bt "$addr"
+"""
+
+[tasks.serve-tls]
+description = "Serve over HTTPS so phones on the LAN can use their camera (needs mise run cert)"
+run = "uv run -q bridge.py --bind 0.0.0.0 --tls cert.pem key.pem"
+
+[tasks.cert]
+description = "Make a self-signed certificate for serve-tls"
+run = """
+ip=$(hostname -I 2>/dev/null | cut -d' ' -f1)
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 3650 \
+    -subj "/CN=qr-sort" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1${ip:+,IP:$ip}"
+echo "cert.pem for ${ip:-localhost}; accept the browser warning once on each phone"
+"""
+
+[tasks.test]
+description = "Run the TypeScript and Python tests"
+run = """
+bun test 2>&1 | tail -n 40
+uv run -q --no-project --python-preference only-system --with pytest --with pillow --with segno pytest -q --tb=short tests 2>&1 | tail -n 40
+"""
+
+[tasks.e2e]
+description = "Drive the built app in Chromium with a fake camera (needs: bun x playwright install chromium)"
+run = "E2E=1 bun test tests/e2e.test.ts 2>&1 | tail -n 40"
+
+[tasks.typecheck]
+description = "Type-check the TypeScript sources"
+run = "bun x tsc --noEmit"

@@ -1,0 +1,15 @@
+// Codes as they come off real bags, with the ISO 15434 control characters.
+export const RS = "\x1e";
+export const GS = "\x1d";
+export const EOT = "\x04";
+
+export const DK_OLD = `[)>${RS}06${GS}P296-8286-1-ND${GS}1PSN74LVC1G08DBVR${GS}K${GS}1K12345678${GS}10K87654321` +
+    `${GS}9D2238${GS}1TABC123${GS}11K1${GS}4LCN${GS}Q10${GS}11ZPICK${GS}12Z3178254${GS}13Z412301${GS}20Z000000${RS}${EOT}`;
+
+export const DK_NEW = `[)>${RS}06${GS}PMYCUSTPN${GS}30P311-10KARCT-ND${GS}1PRC0805FR-0710KL${GS}K${GS}1K55555` +
+    `${GS}10K66666${GS}9D2310${GS}1TLOT9${GS}4LTW${GS}Q100${GS}12Z1${GS}13Z2${RS}${EOT}`;
+
+export const MOUSER = `[)>${RS}06${GS}K12345678${GS}14K001${GS}1PGRM188R71H104KA93D${GS}Q100${GS}11K073218123` +
+    `${GS}4LJP${GS}1VMurata${RS}${EOT}`;
+
+export const LCSC = "{pbn:PICK2305160001,on:SO2305161111,pc:C14663,pm:STM32F103C8T6,qty:10,mc:,cc:1,pdi:12345678,hp:0,wc:SZ}";

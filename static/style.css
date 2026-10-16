@@ -1,0 +1,478 @@
+/* Solarized palette; the dark set applies with the system theme. */
+:root {
+    --base03: #002b36;
+    --base02: #073642;
+    --base01: #586e75;
+    --base00: #657b83;
+    --base0: #839496;
+    --base1: #93a1a1;
+    --base2: #eee8d5;
+    --base3: #fdf6e3;
+    --yellow: #b58900;
+    --orange: #cb4b16;
+    --red: #dc322f;
+    --magenta: #d33682;
+    --violet: #6c71c4;
+    --blue: #268bd2;
+    --cyan: #2aa198;
+    --green: #859900;
+
+    --bg: var(--base3);
+    --bg2: var(--base2);
+    --fg: var(--base00);
+    --fg-strong: var(--base01);
+    --muted: var(--base1);
+    --line: var(--base2);
+    --radius: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: var(--base03);
+        --bg2: var(--base02);
+        --fg: var(--base0);
+        --fg-strong: var(--base1);
+        --muted: var(--base01);
+        --line: var(--base02);
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, sans-serif;
+    line-height: 1.4;
+    -webkit-tap-highlight-color: transparent;
+}
+
+h1, h2, h3 {
+    color: var(--fg-strong);
+    margin: 0 0 0.5em;
+    font-weight: 600;
+}
+
+h2 {
+    font-size: 1.15rem;
+}
+
+h3 {
+    font-size: 1rem;
+}
+
+a {
+    color: var(--blue);
+}
+
+code, .mono {
+    font-family: ui-monospace, monospace;
+    font-size: 0.9em;
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.tabs {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    background: var(--bg2);
+    border-bottom: 0.0625rem solid var(--line);
+}
+
+.tab {
+    flex: 1;
+    padding: 0.8em 0.25em;
+    text-align: center;
+    background: none;
+    border: 0;
+    border-bottom: 0.2rem solid transparent;
+    color: var(--fg);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.tab.active {
+    color: var(--blue);
+    border-bottom-color: var(--blue);
+}
+
+main {
+    flex: 1;
+    width: 100%;
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.stack > * + * {
+    margin-top: 1rem;
+}
+
+.panel {
+    background: var(--bg2);
+    border-radius: var(--radius);
+    padding: 1rem;
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.row.between {
+    justify-content: space-between;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+    gap: 0.75rem;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    min-width: 0;
+}
+
+.field.wide {
+    grid-column: 1 / -1;
+}
+
+.field > span {
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+input, select, textarea {
+    font: inherit;
+    color: var(--fg-strong);
+    background: var(--bg);
+    border: 0.0625rem solid var(--muted);
+    border-radius: 0.35rem;
+    padding: 0.5em 0.6em;
+    min-width: 0;
+    width: 100%;
+}
+
+input:focus, select:focus, textarea:focus {
+    outline: 0.125rem solid var(--blue);
+    outline-offset: 0;
+}
+
+.btn {
+    font: inherit;
+    font-weight: 600;
+    color: var(--fg-strong);
+    background: var(--bg);
+    border: 0.0625rem solid var(--muted);
+    border-radius: 0.35rem;
+    padding: 0.55em 1em;
+    cursor: pointer;
+    min-height: 2.6rem;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.btn.primary {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: var(--base3);
+}
+
+.btn.danger {
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.btn.small {
+    padding: 0.3em 0.7em;
+    min-height: 2rem;
+    font-weight: 500;
+}
+
+.toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    cursor: pointer;
+    user-select: none;
+}
+
+.toggle input {
+    width: 1.2rem;
+    height: 1.2rem;
+    margin: 0;
+    accent-color: var(--blue);
+}
+
+.muted {
+    color: var(--muted);
+}
+
+.small {
+    font-size: 0.85rem;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.1em 0.5em;
+    border-radius: 1em;
+    background: var(--bg);
+    color: var(--fg-strong);
+    font-size: 0.8rem;
+}
+
+.badge.ok {
+    background: var(--green);
+    color: var(--base3);
+}
+
+.badge.warn {
+    background: var(--yellow);
+    color: var(--base3);
+}
+
+.badge.err {
+    background: var(--red);
+    color: var(--base3);
+}
+
+.camera {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: var(--base03);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.camera video, .camera canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.camera .status {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 0.4em 0.8em;
+    background: rgb(0 43 54 / 0.7);
+    color: var(--base2);
+    font-size: 0.9rem;
+}
+
+.camera .center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--base1);
+    text-align: center;
+    padding: 1rem;
+}
+
+.guide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    pointer-events: none;
+    color: var(--base3);
+    text-shadow: 0 0 0.3em rgb(0 0 0 / 0.8);
+    font-size: clamp(1.2rem, 4vw, 2rem);
+    font-weight: 700;
+    text-align: center;
+    padding: 0 1rem;
+}
+
+.guide svg {
+    width: 35%;
+    max-width: 12rem;
+    height: auto;
+    filter: drop-shadow(0 0 0.3em rgb(0 0 0 / 0.7));
+}
+
+.guide.here {
+    background: rgb(133 153 0 / 0.35);
+}
+
+.guide.wrong {
+    background: rgb(220 50 47 / 0.3);
+}
+
+.list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.list > li {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55em 0;
+    border-bottom: 0.0625rem solid var(--line);
+}
+
+.list > li:last-child {
+    border-bottom: 0;
+}
+
+.list .grow {
+    flex: 1;
+    min-width: 0;
+}
+
+.list .title {
+    color: var(--fg-strong);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.list li.clickable {
+    cursor: pointer;
+}
+
+.list li.selected {
+    background: var(--bg);
+    margin: 0 -0.5rem;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    border-radius: 0.35rem;
+}
+
+.thumb {
+    width: 3.2rem;
+    height: 3.2rem;
+    object-fit: cover;
+    border-radius: 0.35rem;
+    background: var(--bg);
+    flex: none;
+}
+
+.tree details {
+    margin: 0.4rem 0 0.4rem 0;
+}
+
+.tree details details {
+    margin-left: 1rem;
+}
+
+.tree summary {
+    cursor: pointer;
+    padding: 0.35em 0.25em;
+    color: var(--fg-strong);
+    font-weight: 600;
+}
+
+.tree summary .muted {
+    font-weight: 400;
+}
+
+.tree .actions {
+    margin: 0.25rem 0 0.5rem 1.3rem;
+}
+
+.toasts {
+    position: fixed;
+    left: 50%;
+    bottom: 1.5rem;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    z-index: 20;
+    width: min(90vw, 30rem);
+}
+
+.toast {
+    background: var(--base02);
+    color: var(--base2);
+    padding: 0.7em 1em;
+    border-radius: var(--radius);
+    border-left: 0.3rem solid var(--blue);
+    box-shadow: 0 0.3rem 1rem rgb(0 0 0 / 0.3);
+}
+
+.toast.ok {
+    border-left-color: var(--green);
+}
+
+.toast.err {
+    border-left-color: var(--red);
+}
+
+.modal-back {
+    position: fixed;
+    inset: 0;
+    background: rgb(0 43 54 / 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    z-index: 10;
+}
+
+.modal {
+    background: var(--bg);
+    border-radius: var(--radius);
+    padding: 1rem;
+    width: min(100%, 32rem);
+    max-height: 90vh;
+    overflow: auto;
+}
+
+.label-preview {
+    display: block;
+    width: 100%;
+    max-width: 24rem;
+    image-rendering: pixelated;
+    border: 0.0625rem solid var(--muted);
+    background: #fff;
+}
+
+.photo {
+    max-width: 100%;
+    border-radius: var(--radius);
+}
+
+.target {
+    border-left: 0.3rem solid var(--green);
+}
+
+.hint {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+}
