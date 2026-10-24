@@ -14,3 +14,15 @@
 - Tests: bun unit tests, fake IndexedDB store tests, zxing round trips, pytest for the bridge,
   Playwright end-to-end with a fake camera.
 - mise tasks, README with architecture diagram, NOTES.
+- Unidentified scans kept apart in their own list, magenta sign and LED color.
+- Big capture sign over the camera (green saved, orange elsewhere/already counted, magenta, red).
+- 1D barcodes (Code 128/39/93) with data identifiers, joined per frame; PDF417 added.
+- Read-text fallback (tesseract.js, offline) with a confidence threshold; manual and photo reads.
+- Camera zoom (hardware or crop) with crop-matched photos; closer look at located-but-unread codes,
+  full-resolution regions and stills.
+- CSV export; bag quantity separate from current count.
+- Batches: start/new, batch mode, put in bag, clear without losing items.
+- Browse edit mode: click and shift-click selection, move items/bags/boxes.
+- Find results open the item in Browse; short item ids (I-12) everywhere, searchable.
+- One record per part number per box, with rescan detection and a merge for older data.
+- RP2040 status LED firmware (GP2/3/4, USB CDC-ACM) and bridge /api/led, optional.

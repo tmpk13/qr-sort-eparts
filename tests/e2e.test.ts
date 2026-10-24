@@ -19,8 +19,8 @@ prepareZXingModule({
     overrides: { wasmBinary: await Bun.file("node_modules/zxing-wasm/dist/full/zxing_full.wasm").arrayBuffer() },
 });
 
-async function clip(text: string, format: "DataMatrix" | "QRCode"): Promise<string> {
-    const written = await writeBarcode(text, { format, scale: 6 });
+async function clip(text: string, format: "DataMatrix" | "QRCode" | "Code128", scale = 6): Promise<string> {
+    const written = await writeBarcode(text, { format, scale });
     const png = PNG.sync.read(Buffer.from(await written.image!.arrayBuffer()));
     const path = join(work, `${format}-${Math.random().toString(36).slice(2)}.y4m`);
     await Bun.write(path, makeY4m(png.width, png.height, png.data, 640, 480, 10));
@@ -34,6 +34,9 @@ function serveDist() {
             const p = new URL(req.url).pathname;
             if (p === "/api/printer") {
                 return Response.json({ ok: false, error: "no printer in the test" }, { status: 503 });
+            }
+            if (p === "/api/led") {
+                return Response.json({ ok: true, attached: false, port: null });
             }
             const f = Bun.file(join(dist, p === "/" ? "index.html" : p.slice(1)));
             return (await f.exists()) ? new Response(f) : new Response("not found", { status: 404 });
@@ -53,6 +56,7 @@ async function launch(video: string, errors: string[]): Promise<{ browser: Brows
     const expected = (text: string) => text.includes("/api/printer") || text.includes("status of 503");
     page.on("console", (m) => m.type() === "error" && !expected(m.text()) && errors.push(m.text()));
     page.on("response", (r) => r.status() >= 400 && !expected(r.url()) && errors.push(`${r.status()} ${r.url()}`));
+    page.on("dialog", (d) => void d.accept());
     return { browser, page };
 }
 
@@ -98,13 +102,36 @@ describe.skipIf(!enabled)("app in a browser", () => {
             await page.getByRole("button", { name: "Inventory" }).click();
             expect(await page.locator("select").first().inputValue()).toBe("bag-1");
             await page.getByRole("button", { name: "Start camera" }).first().click();
+            // The big sign over the picture, then the item in the recent list.
+            const sign = page.locator(".camera .flash.ok");
+            await sign.waitFor({ timeout: 20000 });
+            expect(await sign.textContent()).toBe("Saved I-4 SN74LVC1G08DBVR x10");
+            await shot(page, "inventory-saved");
             const recent = page.locator(".list").last();
-            await recent.getByText("SN74LVC1G08DBVR x10").waitFor({ timeout: 20000 });
+            await recent.getByText("I-4 SN74LVC1G08DBVR").waitFor();
             await page.waitForTimeout(3000);
-            expect(await recent.getByText("SN74LVC1G08DBVR x10").count()).toBe(1);
-            expect(await recent.textContent()).toContain("Bag 1: 0805 resistors");
+            expect(await recent.getByText("I-4 SN74LVC1G08DBVR").count()).toBe(1);
+            const row = recent.locator("li").filter({ hasText: "I-4" });
+            expect(await row.textContent()).toContain("Bag 1: 0805 resistors");
+            expect(await row.textContent()).toContain("x10");
             expect(await recent.locator("img.thumb").count()).toBe(1);
             await shot(page, "inventory");
+
+            // Digital zoom: the fake camera has no zoom of its own, so the picture is scaled.
+            const zoom = page.locator(".camera .zoom input");
+            await zoom.fill("2");
+            expect(await page.locator(".camera video").getAttribute("style")).toContain("scale(2)");
+            await zoom.fill("1");
+
+            // The same part into another bag of the box that already holds it: pointed back to that bag.
+            await page.getByRole("button", { name: "Stop camera" }).click();
+            await page.getByLabel("Current bag").selectOption("bag-2");
+            await page.getByRole("button", { name: "Start camera" }).first().click();
+            const moved = page.locator(".camera .flash.elsewhere");
+            await moved.waitFor({ timeout: 20000 });
+            // It is the very same label, so it is not counted twice either.
+            expect(await moved.textContent()).toBe("Already counted: I-4 SN74LVC1G08DBVR in Bag 1: 0805 resistors");
+            await shot(page, "inventory-elsewhere");
         } finally {
             await browser.close();
         }
@@ -119,6 +146,7 @@ describe.skipIf(!enabled)("app in a browser", () => {
             await page.getByRole("button", { name: "Find" }).click();
             await page.getByPlaceholder(/Part number/).fill("sn74");
             await page.locator(".list li.clickable").first().click();
+            expect(await page.locator(".target").textContent()).toContain("I-3 Single AND gate");
             expect(await page.locator(".target").textContent()).toContain("Bag 3: Logic in Box 2: Semiconductors");
             await page.getByRole("button", { name: "Start camera" }).first().click();
             await page.locator(".guide").waitFor({ timeout: 20000 });
@@ -138,9 +166,133 @@ describe.skipIf(!enabled)("app in a browser", () => {
             await page.getByRole("button", { name: "Browse" }).click();
             await page.locator(".tree").getByText("Box 1: Passives").click();
             await page.locator(".tree").getByText("Bag 3: Logic").waitFor();
+
+            // From a search result straight to the item in Browse.
+            await page.getByRole("button", { name: "Find" }).click();
+            await page.getByPlaceholder(/Part number/).fill("i-3");
+            await page.locator(".list li.clickable").first().getByRole("button", { name: "Open" }).click();
+            await page.locator(".modal").getByText("I-3 Single AND gate").waitFor();
+            expect(await page.locator(".tree li.focused").textContent()).toContain("I-3");
+            await shot(page, "browse-from-find");
         } finally {
             await browser.close();
         }
         expect(errors).toEqual([]);
     }, 60000);
+
+    test("1D barcodes into a batch, the batch into a bag, then cleared", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("1PGRM188R71H104KA93D", "Code128", 2), errors);
+        try {
+            await loadSample(page, site.url);
+            await page.getByRole("button", { name: "Inventory" }).click();
+            await page.getByLabel("Batch mode").check();
+            await page.getByRole("button", { name: "Start camera" }).first().click();
+            const sign = page.locator(".camera .flash.ok");
+            await sign.waitFor({ timeout: 20000 });
+            expect(await sign.textContent()).toBe("Saved I-4 GRM188R71H104KA93D");
+            const batch = page.locator(".batch-box");
+            await batch.getByText("1 items, 1 not in a bag").waitFor();
+            expect(await batch.textContent()).toMatch(/Batch 1 [A-Z2-9]{4}/);
+            await shot(page, "batch");
+            await page.getByRole("button", { name: "Stop camera" }).click();
+            await batch.locator("select").selectOption("bag-2");
+            await batch.getByRole("button", { name: "Put batch in bag" }).click();
+            await page.getByText("Put 1 items into Bag 2: Ceramic caps").waitFor();
+            await batch.getByRole("button", { name: "Clear batch" }).click();
+            await page.getByRole("button", { name: "Start batch" }).waitFor();
+
+            await page.getByRole("button", { name: "Browse" }).click();
+            await page.locator(".tree").getByText("Box 1: Passives").click();
+            await page.locator(".tree").getByText("Bag 2: Ceramic caps").click();
+            await page.locator(".tree").getByText("I-4 GRM188R71H104KA93D").waitFor();
+            expect(await page.locator(".tree").textContent()).not.toContain("Batches");
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 60000);
+
+    test("an unidentified code goes to its own place; edit mode moves a selection; CSV export", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("hello world", "QRCode"), errors);
+        try {
+            await loadSample(page, site.url);
+            await page.getByRole("button", { name: "Inventory" }).click();
+            await page.getByRole("button", { name: "Start camera" }).first().click();
+            await page.locator(".camera .flash.unknown").waitFor({ timeout: 20000 });
+            await page.getByText("1 unidentified scan waits to be identified.").waitFor();
+            await shot(page, "unidentified");
+            await page.getByRole("button", { name: "Stop camera" }).click();
+
+            await page.getByRole("button", { name: "Browse" }).click();
+            const unknown = page.locator(".tree details.unknown");
+            expect(await unknown.textContent()).toContain("I-4 hello world");
+            expect(await page.locator(".tree").getByText("Bag 1: 0805 resistors").count()).toBe(1);
+
+            await page.getByRole("button", { name: "Edit mode" }).click();
+            const list = page.locator(".edit-list");
+            await list.locator("li.item").filter({ hasText: "I-1 " }).click();
+            await list.locator("li.item").filter({ hasText: "I-3 " }).click({ modifiers: ["Shift"] });
+            expect(await list.locator("li.selected").count()).toBe(3);
+            await shot(page, "edit-mode");
+            await page.getByLabel("Move items to bag").selectOption("bag-2");
+            await page.getByRole("button", { name: "Move items" }).click();
+            await page.getByText("Moved 3 items to Bag 2: Ceramic caps").waitFor();
+            await page.getByRole("button", { name: "Done editing" }).click();
+            await page.locator(".tree").getByText("Box 1: Passives").click();
+            await page.locator(".tree").getByText("Bag 2: Ceramic caps").click();
+            await page.locator(".tree").getByText("I-3 Single AND gate").waitFor();
+
+            const download = page.waitForEvent("download");
+            await page.getByRole("button", { name: "Export CSV" }).click();
+            const csv = await Bun.file((await (await download).path())!).text();
+            const lines = csv.trim().split("\r\n");
+            expect(lines[0]).toStartWith("id,type,name,mpn,vendor_pn,bag_qty,count,");
+            expect(lines).toHaveLength(5);
+            expect(csv).toContain("I-4,,,,,,,,,,unknown,");
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 60000);
+
+    test("reading a label's printed text from a photo", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("qrsort:box:1", "QRCode"), errors);
+        try {
+            await loadSample(page, site.url);
+            await page.getByRole("button", { name: "Inventory" }).click();
+            const png = await page.evaluate(() => {
+                const c = document.createElement("canvas");
+                c.width = 1400;
+                c.height = 320;
+                const ctx = c.getContext("2d")!;
+                ctx.fillStyle = "#fff";
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.fillStyle = "#000";
+                ctx.font = "40px sans-serif";
+                ["DIGI-KEY PART NO.: 296-8286-1-ND", "MANUFACTURER PART NO.: SN74LVC1G08DBVR", "QUANTITY: 25"]
+                    .forEach((t, i) => ctx.fillText(t, 40, 80 + i * 90));
+                return c.toDataURL("image/png").split(",")[1];
+            });
+            const file = join(work, "label-text.png");
+            await Bun.write(file, Buffer.from(png, "base64"));
+            await page.getByLabel("Read text").check();
+            await page.locator('input[type="file"][accept="image/*"]').setInputFiles(file);
+            const sign = page.locator(".camera .flash.ok");
+            await page.getByText(/Saved I-4 SN74LVC1G08DBVR x25/).first().waitFor({ timeout: 45000 });
+            expect(await sign.count()).toBe(0); // the camera is off, so the sign is not drawn
+            await page.getByRole("button", { name: "Browse" }).click();
+            await page.locator(".tree").getByText("Box 1: Passives").click();
+            await page.locator(".tree").getByText("Bag 1: 0805 resistors").click();
+            await page.locator(".tree").getByText("I-4 SN74LVC1G08DBVR").click();
+            const modal = page.locator(".modal");
+            expect(await modal.locator("input.mono").first().inputValue()).toBe("SN74LVC1G08DBVR");
+            expect(await modal.locator("textarea").inputValue()).toMatch(/^Read from the label text \(DIGIKEY\), \d+% confidence$/);
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 90000);
 });

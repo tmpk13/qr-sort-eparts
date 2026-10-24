@@ -41,7 +41,7 @@ echo "cert.pem for ${ip:-localhost}; accept the browser warning once on each pho
 description = "Run the TypeScript and Python tests"
 run = """
 bun test 2>&1 | tail -n 40
-uv run -q --no-project --python-preference only-system --with pytest --with pillow --with segno pytest -q --tb=short tests 2>&1 | tail -n 40
+uv run -q --no-project --python-preference only-system --with pytest --with pillow --with segno --with pyserial pytest -q --tb=short tests 2>&1 | tail -n 40
 """
 
 [tasks.e2e]
@@ -51,3 +51,23 @@ run = "E2E=1 bun test tests/e2e.test.ts 2>&1 | tail -n 40"
 [tasks.typecheck]
 description = "Type-check the TypeScript sources"
 run = "bun x tsc --noEmit"
+
+[tasks.fw-build]
+description = "Build the status LED firmware for the RP2040 (release)"
+dir = "{{config_root}}/firmware"
+shell = "bash -c"
+run = "set -o pipefail; cargo build --release -q 2>&1 | tail -n 40"
+
+[tasks.fw-flash]
+description = "Build the LED firmware and copy it to a Pico held in BOOTSEL mode (RPI-RP2 mounted)"
+dir = "{{config_root}}/firmware"
+run = "cargo run --release -q"
+
+[tasks.fw-test]
+description = "Unit-test the LED firmware's line protocol on this machine"
+dir = "{{config_root}}/firmware"
+shell = "bash -c"
+run = """
+set -o pipefail
+cargo test -q --lib --target "$(rustc -vV | sed -n 's/^host: //p')" 2>&1 | tail -n 40
+"""

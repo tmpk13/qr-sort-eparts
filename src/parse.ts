@@ -1,7 +1,8 @@
 // Decoding of the codes found on parts bags: DigiKey and Mouser labels (ISO 15434 format "06"
-// in a Data Matrix), LCSC bags (brace-delimited QR code) and anything else as plain text.
+// in a Data Matrix), LCSC bags (brace-delimited QR code), rows of 1D barcodes carrying data
+// identifiers, the printed text of a label, and anything else as plain text.
 
-export type Source = "digikey" | "mouser" | "lcsc" | "iso15434" | "text";
+export type Source = "digikey" | "mouser" | "lcsc" | "iso15434" | "ocr" | "text";
 
 export interface Parsed {
     source: Source;
@@ -33,6 +34,11 @@ function num(s: string | undefined): number | null {
 
 export function parseCode(text: string): Parsed {
     return parseIso15434(text) ?? parseLcsc(text) ?? empty("text", text);
+}
+
+/** Enough to file the part: a manufacturer or distributor part number. */
+export function identifiable(p: Pick<Parsed, "mpn" | "vendorPn">): boolean {
+    return !!(p.mpn.trim() || p.vendorPn.trim());
 }
 
 /** Readers in "human readable" mode spell the separators out; map them back to the control codes. */
@@ -83,16 +89,93 @@ export function parseIso15434(text: string): Parsed | null {
     const p = empty(digikey ? "digikey" : mouser ? "mouser" : "iso15434", text);
     p.fields = fields;
     p.mpn = fields["1P"] ?? "";
-    p.vendorPn = fields["30P"] ?? fields.P ?? "";
+    // DigiKey part numbers end in -ND; a P without that on a DigiKey label is the buyer's own reference.
+    const pIsVendor = !digikey || /-ND$/i.test(fields.P ?? "");
+    p.vendorPn = fields["30P"] ?? (pIsVendor ? fields.P ?? "" : "");
     p.qty = num(fields.Q);
     p.dateCode = fields["9D"] ?? "";
     p.lot = fields["1T"] ?? "";
     p.country = fields["4L"] ?? "";
     p.manufacturer = fields["1V"] ?? "";
-    if (fields["30P"] && fields.P && fields.P !== fields["30P"]) {
+    if (fields.P && fields.P !== p.vendorPn) {
         p.notes = `Customer PN ${fields.P}`;
     }
     return p;
+}
+
+// Data identifiers worth reading off a 1D barcode; anything else is someone else's barcode.
+const LINEAR_DIS = ["P", "1P", "30P", "Q", "9D", "10D", "1T", "4L", "K", "1K", "10K", "11K", "14K", "1V"];
+
+/**
+ * Distributor and manufacturer labels often print each field as its own Code 128 with the data
+ * identifier in front ("1PSN74LVC1G08DBVR", "Q10"). Joins the ones in view into one ISO 15434
+ * message, or null when they do not name a part: a manufacturer part number (1P, 30P), a DigiKey
+ * number (P ending in -ND), or a P together with a quantity.
+ */
+export function joinLinear(texts: string[]): string | null {
+    const fields = new Map<string, string>();
+    for (const t of texts) {
+        const m = /^(\d{0,2}[A-Z])([\x21-\x7e][\x20-\x7e]*)$/.exec(t.trim());
+        if (m && LINEAR_DIS.includes(m[1]) && !fields.has(m[1])) {
+            fields.set(m[1], m[2].trim());
+        }
+    }
+    const p = fields.get("P") ?? "";
+    const names = fields.has("1P") || fields.has("30P") || /-ND$/i.test(p) || (!!p && fields.has("Q"));
+    if (!names) {
+        return null;
+    }
+    const order = LINEAR_DIS.filter((di) => fields.has(di));
+    return `[)>${RS}06${GS}${order.map((di) => di + fields.get(di)).join(GS)}${RS}${EOT}`;
+}
+
+export interface TextLine {
+    text: string;
+    confidence: number; // 0 to 100
+}
+
+export interface TextRead extends Parsed {
+    confidence: number; // the lowest confidence among the lines the fields came from
+}
+
+const PN_LABEL = "(?:PART|P\\s*/\\s*N|PN)\\.?\\s*(?:NO\\.?|NUMBER|#)?\\s*[:;.]?\\s*";
+const PN_VALUE = "([A-Z0-9][A-Z0-9\\-/.+#,]{2,})";
+const VENDOR_RE = new RegExp(`\\b(DIGI-?\\s?KEY|DK|MOUSER|LCSC)\\s*${PN_LABEL}${PN_VALUE}`, "i");
+const MFR_RE = new RegExp(`\\b(?:MFR|MFG|MANUFACTURER|MANUF)\\.?\\s*${PN_LABEL}${PN_VALUE}`, "i");
+const QTY_RE = /\b(?:QTY|QUANTITY)\.?\s*[:;.]?\s*(\d[\d,]*)\b/i;
+const DESC_RE = /\bDESC(?:RIPTION)?\.?\s*[:;.]?\s*(\S.*)$/i;
+const DIGIKEY_PN_RE = /\b(\d{2,4}-[A-Z0-9][A-Z0-9.\-/]*-ND)\b/i;
+
+/**
+ * The fields printed on a parts label, read by OCR: "DIGI-KEY PART NO.: 296-8286-1-ND",
+ * "Mfr P/N: SN74LVC1G08DBVR", "QTY: 10", "DESC: ...". Null when no part number turns up.
+ */
+export function parseLabelText(lines: TextLine[]): TextRead | null {
+    const used: number[] = [];
+    const find = (re: RegExp): RegExpExecArray | null => {
+        for (const line of lines) {
+            const m = re.exec(line.text);
+            if (m) {
+                used.push(line.confidence);
+                return m;
+            }
+        }
+        return null;
+    };
+    const vendor = find(VENDOR_RE);
+    const mfr = find(MFR_RE);
+    const dk = vendor ? null : find(DIGIKEY_PN_RE);
+    const qty = find(QTY_RE);
+    const desc = find(DESC_RE);
+    const raw = lines.map((l) => l.text).join("\n");
+    const p: TextRead = { ...empty("ocr", raw), confidence: used.length ? Math.min(...used) : 0 };
+    const clean = (v: string | undefined) => (v ?? "").replace(/[.,]+$/, "").toUpperCase();
+    p.mpn = clean(mfr?.[1]);
+    p.vendorPn = clean(vendor?.[2] ?? dk?.[1]);
+    p.qty = qty ? num(qty[1].replace(/,/g, "")) : null;
+    const who = (vendor?.[1] ?? (dk ? "DIGIKEY" : "")).toUpperCase().replace(/[\s-]/g, "");
+    p.fields = { vendor: who === "DK" ? "DIGIKEY" : who, desc: desc ? desc[1].trim() : "" };
+    return identifiable(p) ? p : null;
 }
 
 /** LCSC bag QR: "{pbn:PICK...,on:...,pc:C14663,pm:STM32F103C8T6,qty:10,...}". */

@@ -2,12 +2,20 @@
 // notifies the subscribed components.
 import { useEffect, useState } from "preact/hooks";
 import { Db, type Backup } from "./db.ts";
-import type { Bag, Box, Data, Item, Shelf } from "./model.ts";
+import { emptyData, findTwin, isRescan, isUnidentified, mergeInto, normalizeItem, randomCode, type Bag, type Batch,
+    type Box, type Data, type Item, type Shelf } from "./model.ts";
 
 type Listener = (d: Data) => void;
 
+/** What became of a saved record: stored as it is, or merged into an earlier record of the same part. */
+export interface SaveResult {
+    item: Item; // the record that now holds the part
+    into: Item | null; // the earlier record it was merged into, if any
+    rescan: boolean; // the same label had been counted already; nothing was added
+}
+
 export class Store {
-    data: Data = { shelves: [], boxes: [], bags: [], items: [] };
+    data: Data = emptyData();
     db!: Db;
     private listeners = new Set<Listener>();
 
@@ -53,11 +61,27 @@ export class Store {
     }
 
     bagsIn(boxId: string | null): Bag[] {
-        return this.data.bags.filter((b) => b.boxId === boxId).sort((a, b) => a.created - b.created);
+        return this.data.bags.filter((b) => b.boxId === boxId).sort((a, b) => a.created - b.created
+            || a.id.localeCompare(b.id, undefined, { numeric: true }));
     }
 
+    batch(id: string | null | undefined): Batch | undefined {
+        return this.data.batches.find((b) => b.id === id);
+    }
+
+    /** Identified items in a bag; with null, the ones in no bag and no batch. */
     itemsIn(bagId: string | null): Item[] {
-        return this.data.items.filter((i) => i.bagId === bagId).sort((a, b) => a.created - b.created);
+        return this.data.items
+            .filter((i) => i.bagId === bagId && !isUnidentified(i) && (bagId !== null || !i.batchId))
+            .sort((a, b) => a.created - b.created || a.seq - b.seq);
+    }
+
+    itemsInBatch(batchId: string): Item[] {
+        return this.data.items.filter((i) => i.batchId === batchId).sort((a, b) => a.created - b.created || a.seq - b.seq);
+    }
+
+    unidentified(): Item[] {
+        return this.data.items.filter(isUnidentified).sort((a, b) => b.created - a.created);
     }
 
     private queue: Promise<unknown> = Promise.resolve();
@@ -154,9 +178,126 @@ export class Store {
         });
     }
 
-    saveItem(item: Item, photo?: Blob | null): Promise<void> {
+    /**
+     * Stores the item, or merges it into the record of the same part number already in that box
+     * (bag, batch), so each box holds one record per part with the quantities summed.
+     */
+    saveItem(item: Item, photo?: Blob | null): Promise<SaveResult> {
         return this.run(async () => {
-            await this.db.putItem({ ...item, hasPhoto: item.hasPhoto || !!photo, updated: Date.now() }, photo);
+            const r = await this.put(item, photo);
+            await this.refresh();
+            return r;
+        });
+    }
+
+    private async put(item: Item, photo?: Blob | null): Promise<SaveResult> {
+        const next = normalizeItem(item);
+        const now = Date.now();
+        const twin = findTwin(next, this.data);
+        if (!twin) {
+            if (!next.seq) {
+                next.seq = await this.db.nextNumber("item");
+            }
+            const stored = { ...next, hasPhoto: next.hasPhoto || !!photo, updated: now };
+            await this.db.putItem(stored, photo);
+            return { item: stored, into: null, rescan: false };
+        }
+        const rescan = isRescan(twin, next);
+        const merged = mergeInto(twin, next);
+        // The earlier record keeps its photo; one without gets the newcomer's.
+        let shot: Blob | null | undefined;
+        if (!twin.hasPhoto) {
+            shot = photo ?? (next.hasPhoto && this.item(next.id) ? await this.db.getPhoto(next.id) : undefined);
+        }
+        const stored = { ...merged, hasPhoto: twin.hasPhoto || !!shot, updated: rescan ? twin.updated : now };
+        await this.db.putItem(stored, shot);
+        if (this.item(next.id)) {
+            await this.db.deleteItem(next.id);
+        }
+        return { item: stored, into: twin, rescan };
+    }
+
+    /** Puts items in a bag (null: out of any bag), merging where the part is already there. */
+    moveItems(ids: string[], bagId: string | null): Promise<SaveResult[]> {
+        return this.run(async () => {
+            const out: SaveResult[] = [];
+            for (const id of ids) {
+                const item = this.item(id);
+                if (item) {
+                    // Placing an unidentified scan by hand accepts it as an item.
+                    const source = isUnidentified(item) ? "manual" : item.source;
+                    out.push(await this.put({ ...item, bagId, source }));
+                    await this.refresh();
+                }
+            }
+            return out;
+        });
+    }
+
+    moveBags(ids: string[], boxId: string | null): Promise<void> {
+        return this.run(async () => {
+            for (const id of ids) {
+                const bag = this.bag(id);
+                if (bag && bag.boxId !== boxId) {
+                    await this.db.putBag({ ...bag, boxId });
+                }
+            }
+            await this.refresh();
+        });
+    }
+
+    /** Boxes go to the right end of the shelf in the order given; null takes them off any shelf. */
+    moveBoxes(ids: string[], shelfId: string | null): Promise<void> {
+        return this.run(async () => {
+            for (const id of ids) {
+                await this.placeBox(id, shelfId, null);
+            }
+        });
+    }
+
+    /** Merges records of the same part that share a box (bag, batch) into the oldest of them. */
+    mergeDuplicates(): Promise<number> {
+        return this.run(async () => {
+            let merged = 0;
+            // Newest first: findTwin answers with the oldest record, so each one folds into that.
+            for (const item of [...this.data.items].sort((a, b) => b.created - a.created)) {
+                const current = this.item(item.id);
+                if (current && findTwin(current, this.data)) {
+                    await this.put(current);
+                    await this.refresh();
+                    merged += 1;
+                }
+            }
+            return merged;
+        });
+    }
+
+    createBatch(name = ""): Promise<Batch> {
+        return this.run(async () => {
+            const b: Batch = { id: await this.db.nextId("batch"), code: randomCode(), name, created: Date.now() };
+            await this.db.putBatch(b);
+            await this.refresh();
+            return b;
+        });
+    }
+
+    saveBatch(b: Batch): Promise<void> {
+        return this.run(async () => {
+            await this.db.putBatch(b);
+            await this.refresh();
+        });
+    }
+
+    /** Puts every item of the batch that is not in a bag yet into the bag; the batch stays as a record. */
+    putBatchInBag(batchId: string, bagId: string): Promise<SaveResult[]> {
+        const ids = this.itemsInBatch(batchId).filter((i) => !i.bagId && !isUnidentified(i)).map((i) => i.id);
+        return this.moveItems(ids, bagId);
+    }
+
+    /** Removes the batch without removing its items. */
+    clearBatch(id: string): Promise<void> {
+        return this.run(async () => {
+            await this.db.deleteBatch(id);
             await this.refresh();
         });
     }
@@ -219,9 +360,9 @@ export function useData(): Data {
     return data;
 }
 
-export function blankItem(bagId: string | null): Item {
+export function blankItem(bagId: string | null, batchId: string | null = null): Item {
     const now = Date.now();
-    return { id: crypto.randomUUID(), bagId, type: "", name: "", mpn: "", vendorPn: "", qty: null,
-        dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", hasPhoto: false,
-        created: now, updated: now };
+    return { id: crypto.randomUUID(), seq: 0, bagId, batchId, type: "", name: "", mpn: "", vendorPn: "", qty: null,
+        count: null, dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", merged: [],
+        hasPhoto: false, created: now, updated: now };
 }

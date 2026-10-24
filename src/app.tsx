@@ -1,17 +1,11 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
+import { onNavigate, TABS, type Tab } from "./nav.ts";
 import { Toasts } from "./ui.tsx";
 import { BrowseView } from "./views/browse.tsx";
 import { FindView } from "./views/find.tsx";
 import { InventoryView } from "./views/inventory.tsx";
 import { SettingsView } from "./views/settings.tsx";
 
-const TABS = [
-    ["inventory", "Inventory"],
-    ["find", "Find"],
-    ["browse", "Browse"],
-    ["settings", "Settings"],
-] as const;
-type Tab = (typeof TABS)[number][0];
 const TAB_KEY = "qr-sort.tab";
 
 export function App() {
@@ -24,6 +18,7 @@ export function App() {
         localStorage.setItem(TAB_KEY, t);
         history.replaceState(null, "", `#${t}`);
     };
+    useEffect(() => onNavigate(pick), []);
     return (
         <div class="app">
             <nav class="tabs">

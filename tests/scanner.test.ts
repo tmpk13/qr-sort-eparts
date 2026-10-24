@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AutoCapture, pickCode, type Detection } from "../src/scanner.ts";
+import { AutoCapture, boundsOf, fromRegion, pickCode, type Detection } from "../src/scanner.ts";
 
 function det(text: string, format = "DataMatrix"): Detection {
     return { text, format, corners: [] };
@@ -70,5 +70,36 @@ describe("code choice", () => {
         expect(pickCode([det("qrsort:bag:1", "QRCode"), det("part", "QRCode")])?.text).toBe("part");
         expect(pickCode([det("q", "QRCode"), det("d", "DataMatrix")])?.text).toBe("d");
         expect(pickCode([det("qrsort:bag:1", "QRCode")])?.text).toBe("qrsort:bag:1");
+    });
+});
+
+describe("1D barcodes", () => {
+    test("a row of them makes one candidate, keyed by the part", () => {
+        const c = pickCode([det("Q10", "Code128"), det("1PSN74LVC1G08DBVR", "Code128"), det("4LCN", "Code39")]);
+        expect(c?.key).toBe("linear:SN74LVC1G08DBVR");
+        expect(c?.dets).toHaveLength(3);
+        // One more barcode read in the next frame is still the same bag.
+        expect(pickCode([det("1PSN74LVC1G08DBVR", "Code128")])?.key).toBe(c!.key);
+    });
+
+    test("ones that name no part give nothing; any 2D code wins over them", () => {
+        expect(pickCode([det("Q10", "Code128")])).toBeNull();
+        expect(pickCode([det("1PX1", "Code128"), det("d", "DataMatrix")])?.text).toBe("d");
+    });
+});
+
+describe("looking closer", () => {
+    test("the bounds of a code, widened and clamped to the frame", () => {
+        const r = boundsOf([{ x: 100, y: 100 }, { x: 200, y: 100 }, { x: 200, y: 200 }, { x: 100, y: 200 }], 400, 400, 0.5);
+        expect(r).toEqual({ x0: 0.125, y0: 0.125, x1: 0.625, y1: 0.625 });
+        expect(boundsOf([{ x: 0, y: 0 }, { x: 40, y: 40 }], 100, 100, 0.5)).toEqual({ x0: 0, y0: 0, x1: 0.6, y1: 0.6 });
+        expect(boundsOf([], 100, 100)).toBeNull();
+    });
+
+    test("a point in the enlarged region maps back onto the frame", () => {
+        const r = { x0: 0.25, y0: 0.5, x1: 0.75, y1: 1 };
+        // The region is 320x240 of a 640x480 frame, enlarged 2.5x to 800x600.
+        expect(fromRegion({ x: 400, y: 300 }, r, 800, 600, { width: 640, height: 480 })).toEqual({ x: 320, y: 360 });
+        expect(fromRegion({ x: 0, y: 0 }, r, 800, 600, { width: 640, height: 480 })).toEqual({ x: 160, y: 240 });
     });
 });

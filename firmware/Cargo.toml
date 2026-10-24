@@ -1,0 +1,42 @@
+[package]
+name = "qr-sort-led"
+version = "0.1.0"
+edition = "2021"
+description = "RP2040 firmware: an RGB status LED set over USB serial"
+
+# The line protocol lives in the library so it can be unit-tested on the host;
+# the binary is the firmware proper.
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "qr-sort-led"
+path = "src/main.rs"
+test = false
+bench = false
+
+# Only the firmware needs these; a host build of the library stays dependency-free.
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-rp = { version = "0.10", features = ["defmt", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-usb = { version = "0.6", default-features = false, features = ["defmt"] }
+embassy-futures = "0.1"
+embassy-sync = "0.8"
+
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+cortex-m = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+
+[profile.release]
+debug = 2
+lto = "fat"
+opt-level = "s"
+codegen-units = 1
+
+[profile.dev]
+opt-level = "s"

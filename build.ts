@@ -1,4 +1,5 @@
-// Bundles the app into dist/ and copies the static files and the barcode decoder's wasm.
+// Bundles the app into dist/ and copies the static files, the barcode decoder's wasm and the text
+// reader (tesseract.js worker, engine and English data) so the app needs no network.
 import { watch } from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
 
@@ -13,8 +14,10 @@ async function build(): Promise<boolean> {
         outdir,
         target: "browser",
         format: "esm",
-        naming: "[name].[ext]",
-        minify: !watching,
+        // The text reader is imported on first use; splitting keeps it out of the main bundle.
+        splitting: true,
+        naming: { entry: "[name].[ext]", chunk: "chunk-[hash].[ext]", asset: "[name]-[hash].[ext]" },
+        minify: !watching && !process.env.NOMINIFY,
         sourcemap: "linked",
     });
     for (const log of result.logs) {
@@ -25,6 +28,13 @@ async function build(): Promise<boolean> {
     }
     await cp("static", outdir, { recursive: true });
     await cp("node_modules/zxing-wasm/dist/reader/zxing_reader.wasm", `${outdir}/zxing_reader.wasm`);
+    await mkdir(`${outdir}/ocr`);
+    await cp("node_modules/tesseract.js/dist/worker.min.js", `${outdir}/ocr/worker.min.js`);
+    // The worker picks one of these by the browser's SIMD support; LSTM-only matches OEM 1.
+    for (const core of ["tesseract-core-lstm", "tesseract-core-simd-lstm", "tesseract-core-relaxedsimd-lstm"]) {
+        await cp(`node_modules/tesseract.js-core/${core}.wasm.js`, `${outdir}/ocr/${core}.wasm.js`);
+    }
+    await cp("node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz", `${outdir}/ocr/eng.traineddata.gz`);
     console.log(`built ${outdir}/ at ${new Date().toLocaleTimeString()}`);
     return true;
 }

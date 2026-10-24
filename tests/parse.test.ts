@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { familyKey, guessType, parseCode, parseIso15434, parseLcsc } from "../src/parse.ts";
+import { familyKey, guessType, identifiable, joinLinear, parseCode, parseIso15434, parseLabelText, parseLcsc }
+    from "../src/parse.ts";
 import { DK_NEW, DK_OLD, EOT, GS, LCSC, MOUSER, RS } from "./fixtures.ts";
 
 describe("DigiKey labels", () => {
@@ -106,5 +107,79 @@ describe("type heuristic", () => {
         expect(familyKey("STM32F103")).toBe("STM3");
         expect(familyKey("LTST-C191")).toBe("LTST");
         expect(familyKey("")).toBe("");
+    });
+});
+
+describe("customer references on DigiKey labels", () => {
+    test("a P that is not a DigiKey number is kept as the customer's, not as the vendor PN", () => {
+        const p = parseCode(`[)>${RS}06${GS}PU7${GS}1PMCP1703AT-3302E/CB${GS}K${GS}1K58605004${GS}10K67045066${GS}11K1` +
+            `${GS}4LTW${GS}Q10${GS}11ZPICK${GS}12Z1${GS}13Z2${RS}${EOT}`);
+        expect(p.source).toBe("digikey");
+        expect(p.vendorPn).toBe("");
+        expect(p.mpn).toBe("MCP1703AT-3302E/CB");
+        expect(p.notes).toBe("Customer PN U7");
+    });
+
+    test("Mouser keeps P as its own number", () => {
+        expect(parseCode(`[)>${RS}06${GS}K1${GS}14K001${GS}P595-SN74${GS}1PSN74${RS}${EOT}`).vendorPn).toBe("595-SN74");
+    });
+});
+
+describe("rows of 1D barcodes", () => {
+    test("data identifiers in view join into one message", () => {
+        const joined = joinLinear(["Q100", "1PGRM188R71H104KA93D", "4LJP", "1VMurata"]);
+        expect(joined).not.toBeNull();
+        const p = parseCode(joined!);
+        expect(p.source).toBe("mouser");
+        expect(p).toMatchObject({ mpn: "GRM188R71H104KA93D", qty: 100, country: "JP", manufacturer: "Murata" });
+    });
+
+    test("a DigiKey number alone is enough", () => {
+        expect(parseCode(joinLinear(["P296-8286-1-ND"])!).vendorPn).toBe("296-8286-1-ND");
+    });
+
+    test("codes that do not name a part are ignored", () => {
+        expect(joinLinear([])).toBeNull();
+        expect(joinLinear(["Q100", "4LCN"])).toBeNull();
+        expect(joinLinear(["PIC16F84A"])).toBeNull(); // a bare part number reads as P + "IC16F84A"
+        expect(joinLinear(["4006381333931"])).toBeNull();
+        expect(joinLinear(["PIC16F84A", "Q5"])).not.toBeNull();
+    });
+
+    test("the first of a repeated identifier wins", () => {
+        expect(parseCode(joinLinear(["1PA1", "1PB2"])!).mpn).toBe("A1");
+    });
+});
+
+describe("label text", () => {
+    const lines = (...t: [string, number][]) => t.map(([text, confidence]) => ({ text, confidence }));
+
+    test("a DigiKey label", () => {
+        const r = parseLabelText(lines(["DIGI-KEY PART NO.: 296-8286-1-ND", 91], ["MANUFACTURER PART NO.: SN74LVC1G08DBVR", 88],
+            ["DESCRIPTION: IC GATE AND 1CH 2-INP SOT23-5", 80], ["QUANTITY: 1,000", 95]));
+        expect(r).toMatchObject({ source: "ocr", vendorPn: "296-8286-1-ND", mpn: "SN74LVC1G08DBVR", qty: 1000 });
+        expect(r!.fields).toMatchObject({ vendor: "DIGIKEY", desc: "IC GATE AND 1CH 2-INP SOT23-5" });
+        expect(r!.confidence).toBe(80);
+    });
+
+    test("Mouser and LCSC spellings", () => {
+        expect(parseLabelText(lines(["Mouser P/N: 595-SN74LVC1G08DBVR", 90], ["Mfr P/N: SN74LVC1G08DBVR.", 85],
+            ["Qty: 25", 92]))).toMatchObject({ vendorPn: "595-SN74LVC1G08DBVR", mpn: "SN74LVC1G08DBVR", qty: 25 });
+        expect(parseLabelText(lines(["LCSC Part #: C14663", 70], ["Mfr. Part #: STM32F103C8T6", 75])))
+            .toMatchObject({ vendorPn: "C14663", mpn: "STM32F103C8T6", confidence: 70 });
+    });
+
+    test("a DigiKey number without its caption still counts", () => {
+        expect(parseLabelText(lines(["311-10KARCT-ND", 77]))?.vendorPn).toBe("311-10KARCT-ND");
+    });
+
+    test("text without a part number is not a read", () => {
+        expect(parseLabelText(lines(["QTY: 10", 99], ["Made in Taiwan", 90]))).toBeNull();
+        expect(parseLabelText([])).toBeNull();
+    });
+
+    test("identifiable means a part number of either kind", () => {
+        expect(identifiable({ mpn: "", vendorPn: " " })).toBe(false);
+        expect(identifiable({ mpn: "", vendorPn: "C1" })).toBe(true);
     });
 });

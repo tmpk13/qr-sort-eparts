@@ -1,29 +1,51 @@
-// Browse: the shelf, box and bag tree with editing, placement, labels and item details.
-import { useState } from "preact/hooks";
-import { display, itemName, title, type Bag, type Box, type Item, type Kind, type Shelf } from "../model.ts";
+// Browse: the shelf, box and bag tree with editing, placement, labels and item details; an edit
+// mode to select many things at once and move them; batches and unidentified scans.
+import { useEffect, useRef, useState } from "preact/hooks";
+import { toCsv } from "../csv.ts";
+import { batchTitle, display, isUnidentified, itemName, itemTag, printable, title, type Bag, type Batch, type Box,
+    type Data, type Item, type Kind, type Shelf } from "../model.ts";
+import { takeFocus } from "../nav.ts";
+import { editRows, selectRows, type Row, type RowKind } from "../selection.ts";
+import { identifiable as hasPart } from "../parse.ts";
+import { downloadBlob } from "../printer.ts";
 import { store, useData } from "../store.ts";
-import { Field, ItemForm, LabelDialog, Modal, toast, usePhotoUrl, val } from "../ui.tsx";
+import { Field, ItemForm, LabelDialog, Modal, QtyBadge, Tag, Thumb, toast, usePhotoUrl, val } from "../ui.tsx";
 import { ItemList } from "./find.tsx";
 
 interface Actions {
     edit: (kind: Kind, id: string) => void;
     label: (id: string, name: string) => void;
     item: (id: string) => void;
+    focus: string | null; // an item to show: its shelf, box and bag start open
+}
+
+export function exportCsv(data: Data): void {
+    const day = new Date().toISOString().slice(0, 10);
+    downloadBlob(new Blob([toCsv(data)], { type: "text/csv" }), `qr-sort-${day}.csv`);
 }
 
 export function BrowseView() {
     const data = useData();
+    const [arrival] = useState(() => takeFocus());
     const [edit, setEdit] = useState<{ kind: Kind; id: string } | null>(null);
     const [label, setLabel] = useState<{ id: string; name: string } | null>(null);
-    const [itemId, setItemId] = useState<string | null>(null);
+    const [itemId, setItemId] = useState<string | null>(arrival?.itemId ?? null);
+    const [editMode, setEditMode] = useState(false);
     const actions: Actions = {
         edit: (kind, id) => setEdit({ kind, id }),
         label: (id, name) => setLabel({ id, name }),
         item: (id) => setItemId(id),
+        focus: arrival?.itemId ?? null,
     };
     const looseBoxes = store.boxesOn(null);
     const looseBags = store.bagsIn(null);
     const looseItems = store.itemsIn(null);
+    const unknown = store.unidentified();
+    const focused = store.item(actions.focus);
+
+    useEffect(() => {
+        document.querySelector(".tree li.focused")?.scrollIntoView({ block: "center" });
+    }, []);
 
     return (
         <div class="stack">
@@ -31,24 +53,56 @@ export function BrowseView() {
                 <button class="btn" onClick={() => store.createShelf().then((s) => actions.edit("shelf", s.id))}>New shelf</button>
                 <button class="btn" onClick={() => store.createBox().then((b) => actions.edit("box", b.id))}>New box</button>
                 <button class="btn" onClick={() => store.createBag().then((b) => actions.edit("bag", b.id))}>New bag</button>
+                <button class={`btn${editMode ? " primary" : ""}`} aria-pressed={editMode}
+                    onClick={() => setEditMode((on) => !on)}>
+                    {editMode ? "Done editing" : "Edit mode"}
+                </button>
+                <button class="btn" onClick={() => exportCsv(data)}>Export CSV</button>
             </div>
-            <div class="panel tree">
-                {data.shelves.map((shelf) => <ShelfNode key={shelf.id} shelf={shelf} a={actions} />)}
-                {!data.shelves.length && <p class="muted">No shelves yet. Make a shelf, put boxes on it, bags in the boxes.</p>}
-                {(looseBoxes.length > 0 || looseBags.length > 0 || looseItems.length > 0) && (
-                    <details open>
-                        <summary>Not placed <span class="muted">{looseBoxes.length} boxes, {looseBags.length} bags, {looseItems.length} items</span></summary>
-                        {looseBoxes.map((box) => <BoxNode key={box.id} box={box} a={actions} />)}
-                        {looseBags.map((bag) => <BagNode key={bag.id} bag={bag} a={actions} />)}
-                        {looseItems.length > 0 && <LooseItems a={actions} />}
-                    </details>
-                )}
-            </div>
+            {editMode ? <EditMode data={data} onOpen={actions.item} /> : (
+                <div class="panel tree">
+                    {data.shelves.map((shelf) => <ShelfNode key={shelf.id} shelf={shelf} a={actions} />)}
+                    {!data.shelves.length && <p class="muted">No shelves yet. Make a shelf, put boxes on it, bags in the boxes.</p>}
+                    {(looseBoxes.length > 0 || looseBags.length > 0 || looseItems.length > 0) && (
+                        <details open>
+                            <summary>Not placed <span class="muted">{looseBoxes.length} boxes, {looseBags.length} bags, {looseItems.length} items</span></summary>
+                            {looseBoxes.map((box) => <BoxNode key={box.id} box={box} a={actions} />)}
+                            {looseBags.map((bag) => <BagNode key={bag.id} bag={bag} a={actions} />)}
+                            {looseItems.length > 0 && <LooseItems items={looseItems} a={actions}
+                                open={!!focused && !focused.bagId && !focused.batchId} />}
+                        </details>
+                    )}
+                    {data.batches.length > 0 && (
+                        <details open>
+                            <summary>Batches <span class="muted">{data.batches.length}</span></summary>
+                            {[...data.batches].sort((a, b) => b.created - a.created).map((b) => (
+                                <BatchNode key={b.id} batch={b} a={actions} />
+                            ))}
+                        </details>
+                    )}
+                    {unknown.length > 0 && (
+                        <details open class="unknown">
+                            <summary>Unidentified scans <span class="muted">{unknown.length}</span></summary>
+                            <p class="hint">Codes with no part number in them. Open one to fill it in, or delete it.</p>
+                            <Items items={unknown} a={actions} />
+                        </details>
+                    )}
+                </div>
+            )}
             {edit && <EditDialog kind={edit.kind} id={edit.id} onClose={() => setEdit(null)} />}
             {label && <LabelDialog id={label.id} name={label.name} onClose={() => setLabel(null)} />}
             {itemId && <ItemDialog id={itemId} onClose={() => setItemId(null)} />}
         </div>
     );
+}
+
+/** Whether the focused item sits in this bag (or in a bag of this box, or on this shelf). */
+function holds(a: Actions, where: { bagId?: string; boxId?: string; shelfId?: string }): boolean {
+    const item = store.item(a.focus);
+    const bag = store.bag(item?.bagId);
+    const box = store.box(bag?.boxId);
+    return !!item && ((where.bagId != null && bag?.id === where.bagId) || (where.boxId != null && box?.id === where.boxId)
+        || (where.shelfId != null && box?.shelfId === where.shelfId));
 }
 
 function ShelfNode(p: { shelf: Shelf; a: Actions }) {
@@ -69,11 +123,13 @@ function ShelfNode(p: { shelf: Shelf; a: Actions }) {
 
 function BoxNode(p: { box: Box; a: Actions }) {
     const bags = store.bagsIn(p.box.id);
+    const items = bags.flatMap((b) => store.itemsIn(b.id));
+    const pieces = items.reduce((n, i) => n + (i.count ?? 0), 0);
     return (
-        <details>
+        <details open={holds(p.a, { boxId: p.box.id })}>
             <summary>
                 {p.box.position != null && <span class="badge">#{p.box.position}</span>} {display(p.box)}{" "}
-                <span class="muted">{bags.length} bags</span>
+                <span class="muted">{bags.length} bags, {items.length} parts, {pieces} pieces</span>
             </summary>
             <div class="row actions">
                 <button class="btn small" onClick={() => p.a.edit("box", p.box.id)}>Edit</button>
@@ -90,7 +146,7 @@ function BoxNode(p: { box: Box; a: Actions }) {
 function BagNode(p: { bag: Bag; a: Actions }) {
     const n = store.itemsIn(p.bag.id).length;
     return (
-        <details>
+        <details open={holds(p.a, { bagId: p.bag.id })}>
             <summary>{display(p.bag)} <span class="muted">{n} items</span></summary>
             <div class="row actions">
                 <button class="btn small" onClick={() => p.a.edit("bag", p.bag.id)}>Edit</button>
@@ -98,27 +154,165 @@ function BagNode(p: { bag: Bag; a: Actions }) {
                 <button class="btn small danger" onClick={() => confirm(`Delete ${display(p.bag)} and its ${n} items?`)
                     && store.deleteBag(p.bag.id)}>Delete</button>
             </div>
-            <ItemList bagId={p.bag.id} onPick={p.a.item} />
+            <ItemList bagId={p.bag.id} onPick={p.a.item} focus={p.a.focus} />
         </details>
     );
 }
 
-function LooseItems(p: { a: Actions }) {
+function BatchNode(p: { batch: Batch; a: Actions }) {
+    const data = useData();
+    const items = store.itemsInBatch(p.batch.id);
+    const waiting = items.filter((i) => !i.bagId);
+    const [bagId, setBagId] = useState("");
+    const put = async () => {
+        const r = await store.putBatchInBag(p.batch.id, bagId);
+        toast(`Put ${r.length} items into ${display(store.bag(bagId))}`, "ok");
+    };
     return (
-        <details>
-            <summary>Items in no bag</summary>
-            <ul class="list">
-                {store.itemsIn(null).map((item) => (
-                    <li key={item.id} class="clickable" onClick={() => p.a.item(item.id)}>
-                        <div class="grow"><div class="title">{itemName(item)}</div></div>
-                        {item.qty != null && <span class="badge">x{item.qty}</span>}
+        <details open={!!store.item(p.a.focus) && store.item(p.a.focus)?.batchId === p.batch.id}>
+            <summary>{batchTitle(p.batch)} <span class="muted">{items.length} items, {waiting.length} not in a bag</span></summary>
+            <div class="row actions">
+                <select value={bagId} onChange={(e) => setBagId(val(e))} aria-label="Bag for the batch">
+                    <option value="">(pick a bag)</option>
+                    {data.bags.map((b) => <option value={b.id}>{display(b)}</option>)}
+                </select>
+                <button class="btn small" disabled={!bagId || !waiting.length} onClick={put}>Put in bag</button>
+                <button class="btn small danger" onClick={() => confirm(`Clear ${batchTitle(p.batch)}? Its items stay.`)
+                    && store.clearBatch(p.batch.id)}>Clear batch</button>
+            </div>
+            <Items items={items} a={p.a} showPlace />
+        </details>
+    );
+}
+
+function Items(p: { items: Item[]; a: Actions; showPlace?: boolean }) {
+    return (
+        <ul class="list">
+            {p.items.map((item) => (
+                <li key={item.id} class={`clickable${p.a.focus === item.id ? " focused" : ""}${isUnidentified(item) ? " unknown" : ""}`}
+                    onClick={() => p.a.item(item.id)}>
+                    <Thumb item={item} />
+                    <div class="grow">
+                        <div class="title"><Tag item={item} /> {itemName(item)}</div>
+                        {p.showPlace && <div class="small muted">{display(store.bag(item.bagId)) || "not in a bag"}</div>}
+                    </div>
+                    <QtyBadge item={item} />
+                </li>
+            ))}
+        </ul>
+    );
+}
+
+function LooseItems(p: { items: Item[]; a: Actions; open: boolean }) {
+    return (
+        <details open={p.open}>
+            <summary>Items in no bag <span class="muted">{p.items.length}</span></summary>
+            <Items items={p.items} a={p.a} />
+        </details>
+    );
+}
+
+// ---- edit mode ----
+function EditMode(p: { data: Data; onOpen: (id: string) => void }) {
+    const rows = editRows(p.data);
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const anchor = useRef<string | null>(null);
+    const [bagTo, setBagTo] = useState("");
+    const [boxTo, setBoxTo] = useState("");
+    const [shelfTo, setShelfTo] = useState("");
+    const present = new Set(rows.map((r) => r.id));
+    const picked = (kind: RowKind) => rows.filter((r) => r.kind === kind && selected.has(r.id) && present.has(r.id)).map((r) => r.id);
+    const items = picked("item");
+    const bags = picked("bag");
+    const boxes = picked("box");
+
+    const click = (row: Row, e: MouseEvent) => {
+        if (row.kind === "head") {
+            return;
+        }
+        e.preventDefault();
+        setSelected(selectRows(rows, selected, anchor.current, row, e.shiftKey));
+        anchor.current = row.id;
+    };
+    const done = (text: string) => {
+        setSelected(new Set());
+        anchor.current = null;
+        toast(text, "ok");
+    };
+    const moveItems = async () => {
+        const r = await store.moveItems(items, bagTo || null);
+        const merged = r.filter((x) => x.into).length;
+        done(`Moved ${items.length} items to ${display(store.bag(bagTo)) || "no bag"}${merged ? `, ${merged} merged` : ""}`);
+    };
+    const moveBags = async () => {
+        await store.moveBags(bags, boxTo || null);
+        done(`Moved ${bags.length} bags to ${display(store.box(boxTo)) || "no box"}`);
+    };
+    const moveBoxes = async () => {
+        await store.moveBoxes(boxes, shelfTo || null);
+        done(`Moved ${boxes.length} boxes to ${display(store.shelf(shelfTo)) || "no shelf"}`);
+    };
+
+    return (
+        <div class="stack">
+            <p class="hint">Click to select, shift-click to select a run of the same kind. Items move to a bag,
+                bags (with their items) to a box, boxes to the end of a shelf.</p>
+            <ul class="panel list edit-list">
+                {rows.map((row) => row.kind === "head" ? (
+                    <li key={`h-${row.id}`} class="head">{row.label}</li>
+                ) : (
+                    <li key={row.id} class={`clickable ${row.kind}${selected.has(row.id) ? " selected" : ""}`}
+                        style={`padding-left: ${row.depth * 1.25 + 0.5}rem`} onClick={(e) => click(row, e)}>
+                        <input type="checkbox" checked={selected.has(row.id)} tabIndex={-1} aria-label={`Select ${row.label}`} />
+                        <span class="badge">{row.kind}</span>
+                        <div class="grow">{row.label}</div>
+                        {row.item && <QtyBadge item={row.item} />}
+                        {row.item && <button class="btn small" onClick={(e) => { e.stopPropagation(); p.onOpen(row.id); }}>Open</button>}
                     </li>
                 ))}
             </ul>
-        </details>
+            {(items.length > 0 || bags.length > 0 || boxes.length > 0) && (
+                <div class="panel stack selection-bar">
+                    {items.length > 0 && (
+                        <div class="row">
+                            <span>{items.length} items to</span>
+                            <select value={bagTo} onChange={(e) => setBagTo(val(e))} aria-label="Move items to bag">
+                                <option value="">(no bag)</option>
+                                {p.data.bags.map((b) => <option value={b.id}>{display(b)}</option>)}
+                            </select>
+                            <button class="btn primary" onClick={moveItems}>Move items</button>
+                        </div>
+                    )}
+                    {bags.length > 0 && (
+                        <div class="row">
+                            <span>{bags.length} bags to</span>
+                            <select value={boxTo} onChange={(e) => setBoxTo(val(e))} aria-label="Move bags to box">
+                                <option value="">(no box)</option>
+                                {p.data.boxes.map((b) => <option value={b.id}>{display(b)}</option>)}
+                            </select>
+                            <button class="btn primary" onClick={moveBags}>Move bags</button>
+                        </div>
+                    )}
+                    {boxes.length > 0 && (
+                        <div class="row">
+                            <span>{boxes.length} boxes to</span>
+                            <select value={shelfTo} onChange={(e) => setShelfTo(val(e))} aria-label="Move boxes to shelf">
+                                <option value="">(no shelf)</option>
+                                {p.data.shelves.map((s) => <option value={s.id}>{display(s)}</option>)}
+                            </select>
+                            <button class="btn primary" onClick={moveBoxes}>Move boxes</button>
+                        </div>
+                    )}
+                    <div class="row">
+                        <button class="btn" onClick={() => setSelected(new Set())}>Select none</button>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
 
+// ---- dialogs ----
 function EditDialog(p: { kind: Kind; id: string; onClose: () => void }) {
     const data = useData();
     const thing = p.kind === "shelf" ? store.shelf(p.id) : p.kind === "box" ? store.box(p.id) : store.bag(p.id);
@@ -198,8 +392,11 @@ function ItemDialog(p: { id: string; onClose: () => void }) {
         return null;
     }
     const save = async () => {
-        await store.saveItem(item);
-        toast(`Saved ${itemName(item)}`, "ok");
+        // A scan filled in by hand is no longer unidentified.
+        const next = isUnidentified(item) && (hasPart(item) || item.name) ? { ...item, source: "manual" } : item;
+        const r = await store.saveItem(next);
+        toast(r.into ? `Merged into ${itemTag(r.item)} ${itemName(r.item)}, now x${r.item.count ?? "?"}`
+            : `Saved ${itemTag(r.item)} ${itemName(r.item)}`, "ok");
         p.onClose();
     };
     const remove = async () => {
@@ -208,11 +405,15 @@ function ItemDialog(p: { id: string; onClose: () => void }) {
             p.onClose();
         }
     };
+    const batch = store.batch(item.batchId);
     return (
-        <Modal title={itemName(item)} onClose={p.onClose}>
+        <Modal title={`${itemTag(item)} ${itemName(item)}`} onClose={p.onClose}>
+            {isUnidentified(item) && <p class="hint unknown">Unidentified scan: fill in a part number or a name to file it.</p>}
             <ItemForm item={item} onChange={setItem} bags={data.bags} />
             {photo && <img class="photo" src={photo} alt="" />}
-            {item.raw && <p class="hint mono" style="word-break:break-all">{item.source}: {item.raw.replace(/[\x00-\x1f]/g, " ")}</p>}
+            {batch && <p class="hint">Scanned in {batchTitle(batch)}</p>}
+            {item.merged.length > 0 && <p class="hint">{item.merged.length + 1} bags merged into this record.</p>}
+            {item.raw && <p class="hint mono" style="word-break:break-all">{item.source}: {printable(item.raw)}</p>}
             <div class="row">
                 <button class="btn primary" onClick={save}>Save</button>
                 <button class="btn" onClick={p.onClose}>Cancel</button>

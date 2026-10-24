@@ -3,10 +3,10 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { canvasPng, renderLabel } from "./label.ts";
-import { display, qrPayload, title, type Bag, type Item } from "./model.ts";
+import { display, itemTag, qrPayload, title, type Bag, type Item } from "./model.ts";
 import { TYPES } from "./parse.ts";
 import { downloadBlob, printPng, printerInfo, type PrinterInfo } from "./printer.ts";
-import { Camera, Decoder, Scanner, type Detection, type FrameInfo } from "./scanner.ts";
+import { Camera, Decoder, DIGITAL_ZOOM, Scanner, type Detection, type FrameInfo, type ZoomRange } from "./scanner.ts";
 import { settings, useSettings } from "./settings.ts";
 import { store } from "./store.ts";
 
@@ -81,14 +81,23 @@ export function Modal(p: { title: string; onClose: () => void; children: Compone
 }
 
 // ---- camera ----
+/** A big, short-lived sign over the camera after a capture. */
+export interface Flash {
+    kind: "ok" | "unknown" | "elsewhere" | "err";
+    text: string;
+    at: number; // a new value restarts the animation
+}
+
 export interface CameraPanelProps {
     active: boolean;
     onToggle: () => void;
     formats: string[];
-    onFrame: (dets: Detection[], camera: Camera) => void;
+    onFrame: (dets: Detection[], camera: Camera, misses: Detection[]) => void;
     onReady?: (camera: Camera, decoder: Decoder) => void;
+    onRunning?: (running: boolean) => void;
     highlight?: (d: Detection) => string; // outline color per code
     status?: string;
+    flash?: Flash | null;
     children?: ComponentChildren;
 }
 
@@ -107,7 +116,7 @@ function cameraError(err: unknown): string {
     }
 }
 
-function drawOverlay(canvas: HTMLCanvasElement, dets: Detection[], frame: FrameInfo,
+function drawOverlay(canvas: HTMLCanvasElement, dets: Detection[], misses: Detection[], frame: FrameInfo,
     highlight?: (d: Detection) => string): void {
     if (canvas.width !== frame.width || canvas.height !== frame.height) {
         canvas.width = frame.width;
@@ -117,13 +126,37 @@ function drawOverlay(canvas: HTMLCanvasElement, dets: Detection[], frame: FrameI
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.lineWidth = Math.max(2, frame.width / 250);
     ctx.lineJoin = "round";
-    for (const d of dets) {
-        ctx.strokeStyle = highlight?.(d) ?? "#268bd2";
+    const outline = (d: Detection, color: string, dash: number[]) => {
+        if (d.corners.length < 2) {
+            return;
+        }
+        ctx.strokeStyle = color;
+        ctx.setLineDash(dash);
         ctx.beginPath();
         d.corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
         ctx.closePath();
         ctx.stroke();
-    }
+    };
+    // Found but not read yet: dashed orange, so it is clear the camera has it and needs a better look.
+    misses.forEach((d) => outline(d, "#cb4b16", [ctx.lineWidth * 3, ctx.lineWidth * 2]));
+    dets.forEach((d) => outline(d, highlight?.(d) ?? "#268bd2", []));
+    ctx.setLineDash([]);
+}
+
+function FlashSign(p: { flash: Flash }) {
+    const d = p.flash.kind === "ok" ? "M20 55 L42 77 L82 28"
+        : p.flash.kind === "elsewhere" ? "M15 50 H80 M55 25 L80 50 L55 75"
+            : p.flash.kind === "err" ? "M25 25 L75 75 M75 25 L25 75"
+                : "M35 35 Q35 18 50 18 Q65 18 65 34 Q65 46 50 52 V62 M50 80 V82";
+    return (
+        <div key={p.flash.at} class={`flash ${p.flash.kind}`} role="status">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+                <path d={d} fill="none" stroke="currentColor" stroke-width="12" stroke-linecap="round"
+                    stroke-linejoin="round" />
+            </svg>
+            <div>{p.flash.text}</div>
+        </div>
+    );
 }
 
 export function CameraPanel(p: CameraPanelProps) {
@@ -132,15 +165,30 @@ export function CameraPanel(p: CameraPanelProps) {
     const props = useRef(p);
     props.current = p;
     const rig = useRef<{ camera: Camera; decoder: Decoder; scanner: Scanner } | null>(null);
+    const [s] = useSettings();
     const [error, setError] = useState("");
-    const [running, setRunning] = useState(false);
+    const [running, setRunningState] = useState(false);
+    const [zoomRange, setZoomRange] = useState<ZoomRange>(DIGITAL_ZOOM);
+    const [digital, setDigital] = useState(1);
+    const setRunning = (on: boolean) => {
+        setRunningState(on);
+        props.current.onRunning?.(on);
+    };
+
+    const applyZoom = async (z: number) => {
+        const camera = rig.current?.camera;
+        if (camera?.ready) {
+            await camera.setZoom(z);
+            setDigital(camera.digitalZoom);
+        }
+    };
 
     useEffect(() => {
         const camera = new Camera(videoRef.current!);
         const decoder = new Decoder();
-        const scanner = new Scanner(camera, decoder, props.current.formats, (dets, frame) => {
-            drawOverlay(canvasRef.current!, dets, frame, props.current.highlight);
-            props.current.onFrame(dets, camera);
+        const scanner = new Scanner(camera, decoder, props.current.formats, (dets, frame, misses) => {
+            drawOverlay(canvasRef.current!, dets, misses, frame, props.current.highlight);
+            props.current.onFrame(dets, camera, misses);
         });
         rig.current = { camera, decoder, scanner };
         props.current.onReady?.(camera, decoder);
@@ -154,6 +202,12 @@ export function CameraPanel(p: CameraPanelProps) {
     useEffect(() => {
         rig.current?.scanner.setFormats(p.formats);
     }, [p.formats.join(",")]);
+
+    useEffect(() => {
+        if (rig.current) {
+            rig.current.scanner.useStills = s.stills;
+        }
+    }, [s.stills]);
 
     useEffect(() => {
         const r = rig.current!;
@@ -180,11 +234,13 @@ export function CameraPanel(p: CameraPanelProps) {
                 settings.set({ cameraId: "" }); // the remembered camera is gone
                 await r.camera.start("");
             }
-        })().then(() => {
+        })().then(async () => {
             if (cancelled) {
                 r.camera.stop();
                 return;
             }
+            setZoomRange(r.camera.zoomRange() ?? DIGITAL_ZOOM);
+            await applyZoom(settings.value.zoom);
             r.scanner.start();
             setRunning(true);
         }, (err) => {
@@ -199,9 +255,11 @@ export function CameraPanel(p: CameraPanelProps) {
         };
     }, [p.active]);
 
+    const zoom = Math.min(zoomRange.max, Math.max(zoomRange.min, s.zoom));
     return (
         <div class="camera">
-            <video ref={videoRef} muted playsInline autoPlay />
+            <video ref={videoRef} muted playsInline autoPlay
+                style={digital > 1 ? `transform: scale(${digital})` : undefined} />
             <canvas ref={canvasRef} />
             {!running && (
                 <div class="center">
@@ -211,6 +269,18 @@ export function CameraPanel(p: CameraPanelProps) {
                 </div>
             )}
             {running && p.children}
+            {running && p.flash && <FlashSign flash={p.flash} />}
+            {running && (
+                <label class="zoom" title="Zoom">
+                    <input type="range" min={zoomRange.min} max={zoomRange.max} step={zoomRange.step} value={zoom}
+                        aria-label="Zoom" onInput={(e) => {
+                            const z = Number(val(e));
+                            settings.set({ zoom: z });
+                            void applyZoom(z);
+                        }} />
+                    <span>{zoom.toFixed(zoom % 1 ? 1 : 0)}x</span>
+                </label>
+            )}
             {running && p.status && <div class="status">{p.status}</div>}
         </div>
     );
@@ -309,9 +379,13 @@ export function ItemForm(p: { item: Item; onChange: (i: Item) => void; bags?: Ba
             <Field label={vendor}>
                 <input value={p.item.vendorPn} onInput={(e) => set({ vendorPn: val(e) })} class="mono" />
             </Field>
-            <Field label="Quantity">
+            <Field label="Bag quantity (from the labels)">
                 <input type="number" inputMode="numeric" min="0" value={p.item.qty ?? ""}
                     onInput={(e) => set({ qty: val(e) === "" ? null : Number(val(e)) })} />
+            </Field>
+            <Field label="Current count">
+                <input type="number" inputMode="numeric" min="0" value={p.item.count ?? ""}
+                    onInput={(e) => set({ count: val(e) === "" ? null : Number(val(e)) })} />
             </Field>
             <Field label="Date code">
                 <input value={p.item.dateCode} onInput={(e) => set({ dateCode: val(e) })} />
@@ -359,6 +433,20 @@ export function usePhotoUrl(itemId: string | null, enabled: boolean): string | n
         };
     }, [itemId, enabled]);
     return url;
+}
+
+/** "x40" for the count on hand, "x40/100" when that differs from the bag quantity. */
+export function QtyBadge(p: { item: Item }) {
+    const { count, qty } = p.item;
+    if (count == null && qty == null) {
+        return null;
+    }
+    const text = count == null ? `bag x${qty}` : qty != null && qty !== count ? `x${count}/${qty}` : `x${count}`;
+    return <span class="badge" title="current count / bag quantity">{text}</span>;
+}
+
+export function Tag(p: { item: Item }) {
+    return <span class="tag mono">{itemTag(p.item)}</span>;
 }
 
 export function Thumb(p: { item: Item }) {

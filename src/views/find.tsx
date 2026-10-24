@@ -1,10 +1,12 @@
 // Find: search for an item, bag or box, then follow the camera's directions along the shelf.
-import { useMemo, useRef, useState } from "preact/hooks";
-import { display, guide, itemName, parseQrPayload, placeOfBag, placeText, search, title, type Bag, type Box,
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { ledSteady } from "../led.ts";
+import { display, guide, itemName, itemTag, parseQrPayload, placeOfBag, placeText, search, title, type Bag, type Box,
     type Data, type Hit, type LabelKind } from "../model.ts";
+import { goTo } from "../nav.ts";
 import { FORMATS_LABELS, type Detection } from "../scanner.ts";
 import { store, useData } from "../store.ts";
-import { CameraPanel, Thumb, val } from "../ui.tsx";
+import { CameraPanel, QtyBadge, Tag, Thumb, val } from "../ui.tsx";
 
 interface Target {
     hit: Hit;
@@ -23,7 +25,7 @@ function resolve(hit: Hit | null, data: Data): Target | null {
             return null;
         }
         const p = placeOfBag(item.bagId, data);
-        return { hit, text: `${itemName(item)}: ${placeText(p)}`, bag: p.bag, box: p.box };
+        return { hit, text: `${itemTag(item)} ${itemName(item)}: ${placeText(p)}`, bag: p.bag, box: p.box };
     }
     if (hit.kind === "bag") {
         const p = placeOfBag(hit.id, data);
@@ -109,6 +111,10 @@ export function FindView() {
     const target = resolve(hit, data);
     targetRef.current = target;
     const g = guidance(seen, target);
+    useEffect(() => {
+        ledSteady(!cameraOn ? "off" : g?.cls === "here" ? "ok" : g?.cls === "wrong" ? "err" : "idle");
+    }, [cameraOn, g?.cls]);
+    useEffect(() => () => ledSteady("off"), []);
 
     const onFrame = (dets: Detection[]) => {
         const labels = dets.map((d) => parseQrPayload(d.text)).filter((l): l is Seen => !!l);
@@ -145,6 +151,12 @@ export function FindView() {
                                         <div class="small muted">{t.text.includes(": ") ? t.text.split(": ").slice(1).join(": ") : h.kind}</div>
                                     </div>
                                     <span class="badge">{h.kind}</span>
+                                    {h.kind === "item" && (
+                                        <button class="btn small" onClick={(e) => {
+                                            e.stopPropagation();
+                                            goTo("browse", { itemId: h.id });
+                                        }}>Open</button>
+                                    )}
                                 </li>
                             ) : null;
                         })}
@@ -160,7 +172,14 @@ export function FindView() {
                             <div class="small muted">Looking for</div>
                             <div class="title">{target.text}</div>
                         </div>
-                        <button class="btn small" onClick={() => setHit(null)}>Clear</button>
+                        <div class="row">
+                            {target.hit.kind === "item" && (
+                                <button class="btn small" onClick={() => goTo("browse", { itemId: target.hit.id })}>
+                                    Open in Browse
+                                </button>
+                            )}
+                            <button class="btn small" onClick={() => setHit(null)}>Clear</button>
+                        </div>
                     </div>
                 </div>
             )}
@@ -189,7 +208,7 @@ export function FindView() {
                 <div class="panel">
                     <h2>{seenBag ? display(seenBag) : seenBox ? display(seenBox) : `${title(seen.id)} is not in the database`}</h2>
                     {seenBag && <p class="hint">{placeText(placeOfBag(seenBag.id, data))}</p>}
-                    {seenBag && <ItemList bagId={seenBag.id} />}
+                    {seenBag && <ItemList bagId={seenBag.id} onPick={(id) => goTo("browse", { itemId: id })} />}
                     {seenBox && (
                         <ul class="list">
                             {store.bagsIn(seenBox.id).map((b) => (
@@ -207,18 +226,19 @@ export function FindView() {
     );
 }
 
-export function ItemList(p: { bagId: string; onPick?: (id: string) => void }) {
+export function ItemList(p: { bagId: string; onPick?: (id: string) => void; focus?: string | null }) {
     const items = store.itemsIn(p.bagId);
     return (
         <ul class="list">
             {items.map((item) => (
-                <li key={item.id} class={p.onPick ? "clickable" : ""} onClick={() => p.onPick?.(item.id)}>
+                <li key={item.id} class={`${p.onPick ? "clickable" : ""}${p.focus === item.id ? " focused" : ""}`}
+                    onClick={() => p.onPick?.(item.id)}>
                     <Thumb item={item} />
                     <div class="grow">
-                        <div class="title">{itemName(item)}</div>
+                        <div class="title"><Tag item={item} /> {itemName(item)}</div>
                         <div class="small muted">{[item.type, item.vendorPn, item.dateCode].filter(Boolean).join(" / ")}</div>
                     </div>
-                    {item.qty != null && <span class="badge">x{item.qty}</span>}
+                    <QtyBadge item={item} />
                 </li>
             ))}
             {!items.length && <li class="muted">Empty bag</li>}

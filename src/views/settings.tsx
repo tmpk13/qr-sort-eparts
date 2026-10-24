@@ -1,10 +1,11 @@
 // Settings: scanning defaults, the print bridge, label size, camera choice and backups.
 import { useState } from "preact/hooks";
-import { downloadBlob, printerInfo, type PrinterInfo } from "../printer.ts";
+import { bridgeUrl, downloadBlob, printerInfo, type PrinterInfo } from "../printer.ts";
 import { DEFAULTS, useSettings } from "../settings.ts";
 import type { Item } from "../model.ts";
 import { blankItem, store, useData } from "../store.ts";
 import { Field, Toggle, toast, val } from "../ui.tsx";
+import { exportCsv } from "./browse.tsx";
 
 export function SettingsView() {
     const [s, setS] = useSettings();
@@ -12,6 +13,29 @@ export function SettingsView() {
     const [info, setInfo] = useState<PrinterInfo | null>(null);
     const [testing, setTesting] = useState(false);
     const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+    const [led, setLed] = useState("");
+
+    const testLed = async () => {
+        try {
+            const r = await fetch(bridgeUrl(s.bridgeUrl, "/api/led"), { signal: AbortSignal.timeout(4000) });
+            const j = (r.headers.get("content-type") ?? "").includes("json") ? await r.json() : null;
+            setLed(!j ? "no bridge at this server" : j.attached ? `attached at ${j.port}` : "not attached");
+            if (j?.attached) {
+                for (const color of ["#ff0000", "#00ff00", "#0000ff", "#000000"]) {
+                    await fetch(bridgeUrl(s.bridgeUrl, "/api/led"), { method: "POST", body: JSON.stringify({ color }),
+                        headers: { "Content-Type": "application/json" } });
+                    await new Promise((res) => setTimeout(res, 400));
+                }
+            }
+        } catch (err) {
+            setLed(`no bridge: ${(err as Error).message}`);
+        }
+    };
+
+    const mergeDuplicates = async () => {
+        const n = await store.mergeDuplicates();
+        toast(n ? `Merged ${n} records into ones of the same part in the same box` : "No duplicates to merge", "ok");
+    };
 
     const test = async () => {
         setTesting(true);
@@ -61,7 +85,8 @@ export function SettingsView() {
         await store.createBag("Ceramic caps", boxes[0].id);
         const bag2 = await store.createBag("Logic", boxes[1].id);
         const now = Date.now();
-        const item = (bagId: string, fields: Partial<Item>) => ({ ...blankItem(bagId), ...fields, created: now, updated: now });
+        const item = (bagId: string, fields: Partial<Item>) => ({ ...blankItem(bagId), count: fields.qty ?? null, ...fields,
+            created: now, updated: now });
         await store.saveItem(item(bag.id, { type: "resistor", mpn: "RC0805FR-0710KL", vendorPn: "311-10KARCT-ND", qty: 100,
             dateCode: "2310", source: "digikey" }));
         await store.saveItem(item(bag.id, { type: "resistor", mpn: "RC0805FR-071KL", vendorPn: "311-1.0KARCT-ND", qty: 100,
@@ -89,6 +114,35 @@ export function SettingsView() {
                 <Toggle label="Auto save: store captures without asking" value={s.autoSave}
                     onChange={(v) => setS({ autoSave: v })} />
                 <Toggle label="Save a photo of each bag" value={s.savePhotos} onChange={(v) => setS({ savePhotos: v })} />
+                <Toggle label="Take a full-resolution still when a code is found but will not read" value={s.stills}
+                    onChange={(v) => setS({ stills: v })} />
+                <Toggle label="Read the label text when there is no code (slower; loads a text reader)"
+                    value={s.textFallback} onChange={(v) => setS({ textFallback: v })} />
+                {s.textFallback && (
+                    <Field label={`Minimum text confidence: ${s.ocrConfidence}%`}>
+                        <input type="range" min="0" max="100" step="5" value={s.ocrConfidence}
+                            onInput={(e) => setS({ ocrConfidence: Number(val(e)) })} />
+                    </Field>
+                )}
+                <p class="hint">
+                    Codes in view count when they name a part: Data Matrix, QR and PDF417 codes, or rows of 1D
+                    barcodes with data identifiers (1P, Q, ...). Codes without a part number go to the
+                    unidentified scans. Text reads below the minimum confidence are not used by themselves.
+                </p>
+            </div>
+
+            <div class="panel stack">
+                <h2 style="margin:0">Status LED</h2>
+                <Toggle label="Show the scan status on an LED attached to the bridge" value={s.led}
+                    onChange={(v) => setS({ led: v })} />
+                <div class="row">
+                    <button class="btn" onClick={testLed}>Test LED</button>
+                    {led && <span class="badge">{led}</span>}
+                </div>
+                <p class="hint">
+                    Green: saved. Magenta: unidentified. Orange: the part belongs in another bag, or was counted
+                    already. Red: error. Nothing happens when no LED is attached.
+                </p>
             </div>
 
             <div class="panel stack">
@@ -137,6 +191,7 @@ export function SettingsView() {
                 </p>
                 <div class="row">
                     <button class="btn" onClick={exportJson}>Export backup</button>
+                    <button class="btn" onClick={() => exportCsv(data)}>Export CSV</button>
                     <label class="btn">
                         Restore backup
                         <input type="file" accept="application/json" hidden onChange={(e) => {
@@ -153,7 +208,12 @@ export function SettingsView() {
                         <button class="btn" onClick={loadSample}>Load sample data</button>
                     )}
                     <button class="btn" onClick={() => setS({ typeHints: {} })}>Forget learned types ({Object.keys(s.typeHints).length})</button>
+                    <button class="btn" onClick={mergeDuplicates}>Merge duplicates</button>
                 </div>
+                <p class="hint">
+                    Each box keeps one record per part number: a second bag of a part adds to the first one's
+                    bag quantity and count. Merge duplicates applies that to records made before, or restored.
+                </p>
             </div>
         </div>
     );

@@ -1,0 +1,15 @@
+# Scoped to firmware/ on purpose: a build.target here applies to every crate
+# below this directory, so it must not sit at the repository root.
+[build]
+target = "thumbv6m-none-eabi"
+
+[target.thumbv6m-none-eabi]
+# cargo run: convert to UF2 and copy it to a Pico held in BOOTSEL mode
+# (the RPI-RP2 drive must be mounted). No debug probe needed.
+runner = "elf2uf2-rs -d"
+# With an SWD probe attached instead, this flashes and streams defmt logs:
+# runner = "probe-rs run --chip RP2040"
+rustflags = ["-C", "target-cpu=cortex-m0plus"]
+
+[env]
+DEFMT_LOG = "info"

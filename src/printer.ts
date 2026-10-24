@@ -7,9 +7,12 @@ export interface PrinterInfo {
     error: string;
 }
 
-function url(base: string, path: string): string {
+/** A path on the bridge; an empty base means the server this page came from. */
+export function bridgeUrl(base: string, path: string): string {
     return `${base.replace(/\/+$/, "")}${path}`;
 }
+
+const url = bridgeUrl;
 
 export async function printerInfo(base: string): Promise<PrinterInfo> {
     try {

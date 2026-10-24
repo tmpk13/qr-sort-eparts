@@ -10,13 +10,21 @@ export interface Settings {
     labelH: number;
     density: number; // burn density 0-15
     cameraId: string;
+    zoom: number; // camera zoom, by the camera itself where it can, else by cropping
+    stills: boolean; // take a full-resolution still when a code is seen but will not read
+    textFallback: boolean; // read the label's printed text when there is no code
+    ocrConfidence: number; // 0-100: text reads below this are not used
+    led: boolean; // drive the status LED on the bridge when one is attached
     currentBagId: string | null; // the bag being filled
+    batchMode: boolean; // scans go into the current batch instead of a bag
+    currentBatchId: string | null;
     typeHints: Record<string, string>; // part number family -> type chosen by the user
 }
 
 export const DEFAULTS: Settings = {
     autoScan: true, autoSave: true, savePhotos: true, bridgeUrl: "", labelW: 40, labelH: 30, density: 4,
-    cameraId: "", currentBagId: null, typeHints: {},
+    cameraId: "", zoom: 1, stills: true, textFallback: false, ocrConfidence: 70, led: true, currentBagId: null,
+    batchMode: false, currentBatchId: null, typeHints: {},
 };
 
 const KEY = "qr-sort.settings";
