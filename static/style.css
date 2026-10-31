@@ -484,18 +484,29 @@ input:focus, select:focus, textarea:focus {
     color: var(--violet);
 }
 
-/* Unidentified scans carry magenta wherever they show up. */
-.unknown {
+/* Records waiting to be identified carry their color wherever they show up: magenta for codes with
+   no part number, violet for photos of bags with no code. */
+.unknown,
+.nocode {
     border-left: 0.3rem solid var(--magenta);
     padding-left: 0.6rem;
 }
 
-.list > li.unknown {
+.nocode {
+    border-left-color: var(--violet);
+}
+
+.list > li.unknown,
+.list > li.nocode {
     padding-left: 0.5rem;
 }
 
 .tree details.unknown > summary {
     color: var(--magenta);
+}
+
+.tree details.nocode > summary {
+    color: var(--violet);
 }
 
 .list li.focused {
@@ -538,6 +549,11 @@ input:focus, select:focus, textarea:focus {
 .camera .flash.unknown {
     background: rgb(211 54 130 / 0.55);
     box-shadow: inset 0 0 0 0.6rem var(--magenta);
+}
+
+.camera .flash.nocode {
+    background: rgb(108 113 196 / 0.55);
+    box-shadow: inset 0 0 0 0.6rem var(--violet);
 }
 
 .camera .flash.elsewhere {

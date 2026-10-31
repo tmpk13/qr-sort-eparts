@@ -2,8 +2,9 @@
 // notifies the subscribed components.
 import { useEffect, useState } from "preact/hooks";
 import { Db, type Backup } from "./db.ts";
-import { emptyData, findTwin, isRescan, isUnidentified, mergeInto, normalizeItem, randomCode, type Bag, type Batch,
-    type Box, type Data, type Item, type Shelf } from "./model.ts";
+import { emptyData, findTwin, hasIdentity, isRescan, isUnidentified, mergeInto, normalizeItem, randomCode,
+    unidentifiedKind, type Bag, type Batch, type Box, type Data, type Item, type Shelf, type Unidentified }
+    from "./model.ts";
 
 type Listener = (d: Data) => void;
 
@@ -80,8 +81,15 @@ export class Store {
         return this.data.items.filter((i) => i.batchId === batchId).sort((a, b) => a.created - b.created || a.seq - b.seq);
     }
 
-    unidentified(): Item[] {
-        return this.data.items.filter(isUnidentified).sort((a, b) => b.created - a.created);
+    /** Records waiting to be identified, newest first: all of them, or those of one kind. */
+    unidentified(kind?: Unidentified): Item[] {
+        return this.data.items.filter((i) => (kind ? unidentifiedKind(i) === kind : isUnidentified(i)))
+            .sort((a, b) => b.created - a.created);
+    }
+
+    /** Records waiting to be identified that have been put in one of these bags. */
+    unidentifiedIn(bagIds: string[]): Item[] {
+        return this.data.items.filter((i) => i.bagId !== null && bagIds.includes(i.bagId) && isUnidentified(i));
     }
 
     private queue: Promise<unknown> = Promise.resolve();
@@ -192,6 +200,10 @@ export class Store {
 
     private async put(item: Item, photo?: Blob | null): Promise<SaveResult> {
         const next = normalizeItem(item);
+        if (isUnidentified(next) && hasIdentity(next)) {
+            // Identified by hand: from here on it files like any other item, merging where its part already is.
+            next.source = "manual";
+        }
         const now = Date.now();
         const twin = findTwin(next, this.data);
         if (!twin) {
@@ -217,16 +229,17 @@ export class Store {
         return { item: stored, into: twin, rescan };
     }
 
-    /** Puts items in a bag (null: out of any bag), merging where the part is already there. */
+    /**
+     * Puts items in a bag (null: out of any bag), merging where the part is already there. Records
+     * waiting to be identified go along and keep waiting.
+     */
     moveItems(ids: string[], bagId: string | null): Promise<SaveResult[]> {
         return this.run(async () => {
             const out: SaveResult[] = [];
             for (const id of ids) {
                 const item = this.item(id);
                 if (item) {
-                    // Placing an unidentified scan by hand accepts it as an item.
-                    const source = isUnidentified(item) ? "manual" : item.source;
-                    out.push(await this.put({ ...item, bagId, source }));
+                    out.push(await this.put({ ...item, bagId }));
                     await this.refresh();
                 }
             }

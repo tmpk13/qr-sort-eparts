@@ -13,6 +13,7 @@ const data: Data = {
         normalizeItem({ id: "d", seq: 4, mpn: "D" }),
         normalizeItem({ id: "e", seq: 5, batchId: "batch-1", mpn: "E" }),
         normalizeItem({ id: "f", seq: 6, source: "unknown", raw: "junk" }),
+        normalizeItem({ id: "g", seq: 7, bagId: "bag-1", source: "photo" }),
     ],
     batches: [{ id: "batch-1", code: "AAAA", name: "", created: 0 }],
 };
@@ -24,7 +25,15 @@ describe("edit mode rows", () => {
             "head:loose", "bag:bag-2", "item:c", "item:d",
             "head:batch-1", "item:e",
             "head:unknown", "item:f",
+            "head:nocode", "item:g",
         ]);
+    });
+
+    test("records waiting to be identified stay under their own headings, labeled with where they are", () => {
+        const rows = editRows(data);
+        expect(rows.find((r) => r.id === "g")?.label).toBe("I-7 (photo, no code) (in Bag 1)");
+        expect(rows.find((r) => r.id === "f")?.label).toBe("I-6 junk");
+        expect(rows.filter((r) => r.id === "g")).toHaveLength(1);
     });
 
     test("click toggles, shift-click adds the run of the clicked kind", () => {

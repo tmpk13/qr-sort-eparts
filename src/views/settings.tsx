@@ -127,7 +127,7 @@ export function SettingsView() {
                 <p class="hint">
                     Codes in view count when they name a part: Data Matrix, QR and PDF417 codes, or rows of 1D
                     barcodes with data identifiers (1P, Q, ...). Codes without a part number go to the
-                    unidentified scans. Text reads below the minimum confidence are not used by themselves.
+                    unidentified codes. Text reads below the minimum confidence are not used by themselves.
                 </p>
             </div>
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { display, findTwin, guide, isRescan, itemName, itemTag, mergeInto, normalizeItem, parseQrPayload, partKey,
-    placeOfBag, placeText, qrPayload, scopeOf, search, title, type Box, type Data, type Item } from "../src/model.ts";
+import { display, findTwin, guide, hasIdentity, isRescan, isUnidentified, itemName, itemTag, mergeInto, normalizeItem,
+    parseQrPayload, partKey, placeOfBag, placeText, qrPayload, scopeOf, search, title, unidentifiedKind, type Box,
+    type Data, type Item } from "../src/model.ts";
 
 function box(id: string, shelfId: string | null, position: number | null): Box {
     return { id, name: "", shelfId, position, created: 0 };
@@ -91,6 +92,7 @@ describe("one record per part in a box", () => {
         expect(scopeOf(item({ id: "a", batchId: "batch-1" }), d)).toBe("batch-1");
         expect(scopeOf(item({ id: "a" }), d)).toBe("loose");
         expect(scopeOf(item({ id: "a", bagId: "bag-1", source: "unknown" }), d)).toBe("unknown");
+        expect(scopeOf(item({ id: "a", bagId: "bag-1", source: "photo" }), d)).toBe("unknown");
     });
 
     test("parts compare by manufacturer PN, then vendor PN, ignoring case; unidentified scans by their code", () => {
@@ -98,6 +100,18 @@ describe("one record per part in a box", () => {
         expect(partKey(item({ id: "a", vendorPn: "C14663" }))).toBe("pn:C14663");
         expect(partKey(item({ id: "a" }))).toBe("");
         expect(partKey(item({ id: "a", source: "unknown", raw: "hello" }))).toBe("raw:hello");
+        expect(partKey(item({ id: "a", source: "photo" }))).toBe(""); // every photo is a bag of its own
+    });
+
+    test("codes with no part number and photos with no code wait to be identified; a part number or a name does it", () => {
+        expect(unidentifiedKind(item({ id: "a", source: "unknown" }))).toBe("code");
+        expect(unidentifiedKind(item({ id: "a", source: "photo" }))).toBe("photo");
+        expect(unidentifiedKind(item({ id: "a", source: "manual" }))).toBeNull();
+        expect(isUnidentified(item({ id: "a", source: "photo", bagId: "bag-1" }))).toBe(true);
+        expect(hasIdentity(item({ id: "a", notes: "white bag", raw: "hello" }))).toBe(false);
+        expect(hasIdentity(item({ id: "a", name: "  " }))).toBe(false);
+        expect(hasIdentity(item({ id: "a", name: "M3 screws" }))).toBe(true);
+        expect(hasIdentity(item({ id: "a", vendorPn: "C14663" }))).toBe(true);
     });
 
     test("a twin is the oldest other record of the part in the same box", () => {
@@ -131,6 +145,10 @@ describe("one record per part in a box", () => {
         expect(itemTag({ seq: 12 })).toBe("I-12");
         expect(itemName(item({ id: "a", vendorPn: "C1" }))).toBe("C1");
         expect(itemName(item({ id: "a", raw: "a\x1db" }))).toBe("a b");
+        expect(itemName(item({ id: "a" }))).toBe("(unnamed)");
+        expect(itemName(item({ id: "a", source: "photo" }))).toBe("(photo, no code)");
         expect(search("i-2", data).map((h) => h.id)).toEqual(["i2"]);
+        const photo = normalizeItem({ id: "p", seq: 3, source: "photo" });
+        expect(search("unidentified photo", { ...data, items: [...data.items, photo] }).map((h) => h.id)).toEqual(["p"]);
     });
 });

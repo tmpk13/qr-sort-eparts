@@ -29,16 +29,19 @@ HTTPS, hence `serve-tls` for phones.
   auto scan on, a bag is captured once it has settled in the frame and the next one only after it
   has been taken away. Auto save stores it at once; otherwise the parsed fields appear for checking.
   A big sign over the picture says what happened: green saved, orange "it belongs in another bag"
-  or "already counted", magenta unidentified. Scanning a bag label switches to that bag, scanning a
-  box label puts the current bag in that box. "Scan a photo" reads a picture instead of the camera,
-  "Add by hand" skips the code, the slider zooms.
+  or "already counted", magenta unidentified code, violet photo with no code. Scanning a bag label
+  switches to that bag, scanning a box label puts the current bag in that box. "Photo, no code" keeps
+  a picture of a bag whose code is missing or will not read. "Scan a photo" reads a picture instead
+  of the camera (and offers to keep it when nothing in it reads), "Add by hand" skips the code, the
+  slider zooms.
 - **One record per part per box**: a second bag of a part in the same box adds to the first one's
   bag quantity and current count; the same label scanned twice is counted once. Items show a short
   id (`I-12`).
 - **Batch mode**: scans collect in a batch (date, time, random code) instead of a bag; "Put batch in
   bag" files them, "Clear batch" drops the batch and keeps the items.
-- **Unidentified scans**: codes without a part number are kept apart, listed under Browse until
-  filled in or deleted.
+- **Unidentified codes and photos**: codes without a part number, and photos of bags with no code,
+  wait in two lists of their own under Browse. Putting one in a bag, or its bag in a box, leaves it
+  waiting; a part number or a name identifies it, and from then on it files like any item.
 - **Read text**: with no code in view for a while, the label's printed text is read; reads below the
   confidence set in Settings are not used.
 - **Find**: search by part number, name, type, bag or box. Pick a result, point the camera at the

@@ -26,3 +26,6 @@
 - Find results open the item in Browse; short item ids (I-12) everywhere, searchable.
 - One record per part number per box, with rescan detection and a merge for older data.
 - RP2040 status LED firmware (GP2/3/4, USB CDC-ACM) and bridge /api/led, optional.
+- Photos of bags with no code ("Photo, no code", or a chosen photo where nothing reads), in their own
+  list with a violet sign and LED color; unidentified codes and photos stay unidentified when put in
+  a bag or their bag in a box, until given a part number or a name.

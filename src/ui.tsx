@@ -3,7 +3,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { canvasPng, renderLabel } from "./label.ts";
-import { display, itemTag, qrPayload, title, type Bag, type Item } from "./model.ts";
+import { display, itemTag, qrPayload, title, unidentifiedKind, type Bag, type Item } from "./model.ts";
 import { TYPES } from "./parse.ts";
 import { downloadBlob, printPng, printerInfo, type PrinterInfo } from "./printer.ts";
 import { Camera, Decoder, DIGITAL_ZOOM, Scanner, type Detection, type FrameInfo, type ZoomRange } from "./scanner.ts";
@@ -83,7 +83,7 @@ export function Modal(p: { title: string; onClose: () => void; children: Compone
 // ---- camera ----
 /** A big, short-lived sign over the camera after a capture. */
 export interface Flash {
-    kind: "ok" | "unknown" | "elsewhere" | "err";
+    kind: "ok" | "unknown" | "nocode" | "elsewhere" | "err";
     text: string;
     at: number; // a new value restarts the animation
 }
@@ -147,7 +147,9 @@ function FlashSign(p: { flash: Flash }) {
     const d = p.flash.kind === "ok" ? "M20 55 L42 77 L82 28"
         : p.flash.kind === "elsewhere" ? "M15 50 H80 M55 25 L80 50 L55 75"
             : p.flash.kind === "err" ? "M25 25 L75 75 M75 25 L25 75"
-                : "M35 35 Q35 18 50 18 Q65 18 65 34 Q65 46 50 52 V62 M50 80 V82";
+                : p.flash.kind === "nocode" // a camera
+                    ? "M10 32 H30 L38 20 H62 L70 32 H90 V84 H10 Z M39 58 A11 11 0 1 0 61 58 A11 11 0 1 0 39 58"
+                    : "M35 35 Q35 18 50 18 Q65 18 65 34 Q65 46 50 52 V62 M50 80 V82";
     return (
         <div key={p.flash.at} class={`flash ${p.flash.kind}`} role="status">
             <svg viewBox="0 0 100 100" aria-hidden="true">
@@ -447,6 +449,12 @@ export function QtyBadge(p: { item: Item }) {
 
 export function Tag(p: { item: Item }) {
     return <span class="tag mono">{itemTag(p.item)}</span>;
+}
+
+/** The marker class of a record waiting to be identified (magenta for codes, violet for photos), else "". */
+export function waitingClass(item: Pick<Item, "source">): string {
+    const kind = unidentifiedKind(item);
+    return kind === "code" ? "unknown" : kind === "photo" ? "nocode" : "";
 }
 
 export function Thumb(p: { item: Item }) {

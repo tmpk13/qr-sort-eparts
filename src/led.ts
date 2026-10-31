@@ -3,7 +3,7 @@
 import { bridgeUrl } from "./printer.ts";
 import { settings } from "./settings.ts";
 
-export type LedState = "off" | "idle" | "seen" | "ok" | "unknown" | "elsewhere" | "err";
+export type LedState = "off" | "idle" | "seen" | "ok" | "unknown" | "nocode" | "elsewhere" | "err";
 
 // Physical LED colors: full channels read better on a diffused LED than the screen palette does.
 export const LED_COLORS: Record<LedState, string> = {
@@ -11,7 +11,8 @@ export const LED_COLORS: Record<LedState, string> = {
     idle: "#000010", // camera running, nothing in view
     seen: "#001818", // a code is in view, settling
     ok: "#00ff00", // saved
-    unknown: "#ff00a0", // saved among the unidentified scans
+    unknown: "#ff00a0", // saved among the unidentified codes
+    nocode: "#8000ff", // a bag with no code: its photo kept among the unidentified photos
     elsewhere: "#ff8000", // the part was already in another bag of this box
     err: "#ff0000",
 };

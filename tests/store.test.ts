@@ -162,9 +162,59 @@ describe("one record per part in a box", () => {
         expect((await s.saveItem({ ...u, id: crypto.randomUUID() })).rescan).toBe(true);
         expect(s.unidentified().map((i) => i.raw)).toEqual(["https://example.com"]);
         expect(s.itemsIn(null)).toHaveLength(0);
-        // Placing one by hand accepts it.
-        await s.moveItems([u.id], bag.id);
-        expect(s.item(u.id)).toMatchObject({ bagId: bag.id, source: "manual" });
+    });
+
+    test("photos of bags with no code are listed apart from codes, one record per photo", async () => {
+        const s = await fresh();
+        const u = await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" });
+        const p1 = await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]));
+        const p2 = await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]));
+        expect(p2.into).toBeNull();
+        expect(s.unidentified("code").map((i) => i.id)).toEqual([u.item.id]);
+        expect(s.unidentified("photo").map((i) => i.id).sort()).toEqual([p1.item.id, p2.item.id].sort());
+        expect(s.unidentified()).toHaveLength(3);
+        expect(s.item(p1.item.id)?.hasPhoto).toBe(true);
+    });
+
+    test("putting unidentified records in a bag, or their bag in a box, leaves them waiting", async () => {
+        const s = await fresh();
+        const bag = await s.createBag();
+        const box = await s.createBox();
+        const u = (await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" })).item;
+        const p = (await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]))).item;
+        await s.moveItems([u.id, p.id], bag.id);
+        await s.moveBags([bag.id], box.id);
+        expect(s.item(u.id)).toMatchObject({ bagId: bag.id, source: "unknown" });
+        expect(s.item(p.id)).toMatchObject({ bagId: bag.id, source: "photo" });
+        expect(s.unidentified()).toHaveLength(2);
+        expect(s.unidentifiedIn([bag.id])).toHaveLength(2);
+        expect(s.itemsIn(bag.id)).toHaveLength(0);
+        // Notes, a count or a bag picked in the item dialog do not identify it either.
+        await s.saveItem({ ...s.item(p.id)!, notes: "white bag", count: 10, bagId: null });
+        expect(s.item(p.id)).toMatchObject({ source: "photo", bagId: null, count: 10 });
+        expect(s.unidentified("photo")).toHaveLength(1);
+    });
+
+    test("a part number or a name identifies a waiting record, which then files like any item", async () => {
+        const s = await fresh();
+        const box = await s.createBox();
+        const bag1 = await s.createBag("", box.id);
+        const bag2 = await s.createBag("", box.id);
+        const kept = (await s.saveItem(part(bag1.id, { mpn: "NE5532", qty: 5, raw: "K" }))).item;
+        const p = (await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]))).item;
+        const u = (await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" })).item;
+        await s.moveItems([p.id, u.id], bag2.id);
+
+        const named = await s.saveItem({ ...s.item(p.id)!, name: "M3 screws" });
+        expect(named.item).toMatchObject({ id: p.id, source: "manual", bagId: bag2.id, hasPhoto: true });
+        expect(s.itemsIn(bag2.id).map((i) => i.id)).toEqual([p.id]);
+        expect((await s.db.getPhoto(p.id))?.size).toBe(4);
+
+        // Identified as a part already in the box: merged into that record like a second bag of it.
+        const merged = await s.saveItem({ ...s.item(u.id)!, mpn: "ne5532", qty: 2 });
+        expect(merged.into?.id).toBe(kept.id);
+        expect(s.item(kept.id)).toMatchObject({ qty: 7, merged: ["hello"] });
+        expect(s.item(u.id)).toBeUndefined();
         expect(s.unidentified()).toHaveLength(0);
     });
 

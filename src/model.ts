@@ -43,7 +43,7 @@ export interface Item {
     lot: string;
     country: string;
     notes: string;
-    source: string; // what the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, manual, unknown
+    source: string; // what the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, manual, unknown; photo when none read
     raw: string; // the decoded code, verbatim
     merged: string[]; // raw codes of later bags merged into this record
     hasPhoto: boolean;
@@ -92,8 +92,9 @@ export function display(thing: { id: string; name: string } | null | undefined):
     return thing.name ? `${title(thing.id)}: ${thing.name}` : title(thing.id);
 }
 
-export function itemName(item: Pick<Item, "name" | "mpn" | "vendorPn" | "raw">): string {
-    return item.name || item.mpn || item.vendorPn || printable(item.raw) || "(unnamed)";
+export function itemName(item: Pick<Item, "name" | "mpn" | "vendorPn" | "raw" | "source">): string {
+    return item.name || item.mpn || item.vendorPn || printable(item.raw)
+        || (unidentifiedKind(item) === "photo" ? "(photo, no code)" : "(unnamed)");
 }
 
 /** The short id shown next to an item: "I-12". */
@@ -106,9 +107,27 @@ export function printable(text: string): string {
     return text.replace(/[\x00-\x1f]+/g, " ").trim();
 }
 
-/** A scan that yielded no part number: it waits in its own place until someone identifies it. */
+/**
+ * Why a record waits to be identified: its code had no part number in it ("code"), or its bag had no
+ * code that would read and only a photo was kept ("photo").
+ */
+export type Unidentified = "code" | "photo";
+
+export function unidentifiedKind(item: Pick<Item, "source">): Unidentified | null {
+    return item.source === "unknown" ? "code" : item.source === "photo" ? "photo" : null;
+}
+
+/**
+ * A record that waits in a list of its own until someone identifies it. Where it is kept does not
+ * matter: putting it in a bag, or its bag in a box, leaves it waiting.
+ */
 export function isUnidentified(item: Pick<Item, "source">): boolean {
-    return item.source === "unknown";
+    return unidentifiedKind(item) !== null;
+}
+
+/** What identifies a record by hand: a part number or a name. */
+export function hasIdentity(item: Pick<Item, "mpn" | "vendorPn" | "name">): boolean {
+    return !!(item.mpn.trim() || item.vendorPn.trim() || item.name.trim());
 }
 
 /** "Batch 3 K7Q2, Oct 23 14:05" (or its name when it has one). */
@@ -138,7 +157,8 @@ export function normalizeItem(x: Partial<Item> & { id: string }): Item {
 
 /**
  * The place inside which a part number may appear only once: the box when the bag is in one, else
- * the bag, else the batch, else "loose". Unidentified scans share one place of their own.
+ * the bag, else the batch, else "loose". Records waiting to be identified share one place of their
+ * own, wherever they are kept.
  */
 export function scopeOf(item: Pick<Item, "bagId" | "batchId" | "source">, data: Pick<Data, "bags">): string {
     if (isUnidentified(item)) {
@@ -298,7 +318,8 @@ export function search(query: string, data: Data, limit = 50): Hit[] {
         const place = placeOfBag(item.bagId, data);
         consider("item", item.id, `${item.mpn} ${item.name} ${itemTag(item)}`,
             [item.vendorPn, item.type, item.notes, item.lot, item.dateCode, display(place.bag), display(place.box),
-                isUnidentified(item) ? `unidentified ${printable(item.raw)}` : ""].join(" "));
+                unidentifiedKind(item) === "photo" ? "unidentified photo no code"
+                    : isUnidentified(item) ? `unidentified ${printable(item.raw)}` : ""].join(" "));
     }
     for (const bag of data.bags) {
         consider("bag", bag.id, display(bag), display(data.boxes.find((b) => b.id === bag.boxId)));

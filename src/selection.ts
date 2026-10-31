@@ -1,6 +1,6 @@
 // Edit mode's selection: the tree flattened into rows in display order, and click/shift-click rules.
-import { batchTitle, display, isUnidentified, itemName, itemTag, type Bag, type Box, type Data, type Item }
-    from "./model.ts";
+import { batchTitle, display, isUnidentified, itemName, itemTag, unidentifiedKind, type Bag, type Box, type Data,
+    type Item } from "./model.ts";
 
 export type RowKind = "head" | "box" | "bag" | "item";
 
@@ -42,10 +42,18 @@ export function editRows(data: Data): Row[] {
         rows.push({ kind: "head", id: batch.id, depth: 0, label: batchTitle(batch) });
         addItems(itemsOf((i) => i.batchId === batch.id && !i.bagId && !isUnidentified(i)), 1);
     }
-    const unknown = itemsOf(isUnidentified);
-    if (unknown.length) {
-        rows.push({ kind: "head", id: "unknown", depth: 0, label: "Unidentified scans" });
-        addItems(unknown, 1);
+    // Records waiting to be identified stay under their own headings wherever they are kept; the label says where.
+    const waiting = [["unknown", "code", "Unidentified codes"], ["nocode", "photo", "Unidentified photos"]] as const;
+    for (const [id, kind, label] of waiting) {
+        const items = itemsOf((i) => unidentifiedKind(i) === kind);
+        if (items.length) {
+            rows.push({ kind: "head", id, depth: 0, label });
+            items.forEach((i) => {
+                const bag = data.bags.find((b) => b.id === i.bagId);
+                rows.push({ kind: "item", id: i.id, depth: 1, item: i,
+                    label: `${itemTag(i)} ${itemName(i)}${bag ? ` (in ${display(bag)})` : ""}` });
+            });
+        }
     }
     return rows;
 }

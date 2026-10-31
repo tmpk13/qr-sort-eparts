@@ -81,9 +81,33 @@ gantt
 - **Item numbers**: items keep their UUID key; `seq` is the short id shown as `I-12`, from an "item"
   counter. Database version 2 numbers existing items in creation order inside the upgrade
   transaction; restoring a version 1 backup does the same after the highest number present.
-- **Unidentified scans**: a code that yields no part number is saved with source "unknown", outside
-  any bag and batch, keyed by its raw text so a repeat does not duplicate it. Filling in a part
-  number or name (or placing it by hand in edit mode) turns it into a normal item.
+- **Waiting to be identified**: two kinds, listed apart: a code that yields no part number (source
+  "unknown", keyed by its raw text so a repeat does not duplicate it) and a photo of a bag with no
+  code (source "photo", never merged, since every photo is a bag of its own). Both are saved outside
+  any bag and batch. Placement is independent of the state: moving one to a bag, or its bag to a
+  box, leaves it waiting (placing one by hand used to accept it as an item, filing a code's raw
+  text as if it were a part). Only a part number or a name identifies it, and that rule sits in
+  the store's `put`, so the draft, the item dialog and edit mode cannot disagree. A waiting record
+  is not listed in its bag, only counted there ("2 to identify"); deleting the bag still deletes
+  it, so the confirmation counts it too.
+- **Photo with no code is a button**: without a code there is nothing to tell a bag in view from an
+  empty table, so auto capture cannot take it. The photo is kept whether or not "Save photo" is on.
+  A picture chosen with "Scan a photo" in which nothing reads becomes a draft to save or discard,
+  not a record, since it may just be a bad shot.
+- **Backups and photos**: backups leave photos out (as before), so a photo with no code comes back
+  from a restore as an empty record. Identify those before relying on a backup.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Code: code, no part number
+    [*] --> Photo: Photo, no code
+    [*] --> Item: code with a part number
+    Code --> Code: put in a bag, bag put in a box
+    Photo --> Photo: put in a bag, bag put in a box
+    Code --> Item: part number or name
+    Photo --> Item: part number or name
+    Item --> Item: merged into the record of its part in the box
+```
 - **1D barcodes**: only data-identifier fields count (1P, 30P, P, Q, 9D, 1T, 4L, K..., 1V), joined
   across the codes in one frame into an ISO 15434 message, and only when they name a part: 1P/30P,
   a P ending in -ND, or P with Q. Without that, a plain part number like "PIC16F84A" would read as
