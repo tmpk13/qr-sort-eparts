@@ -25,13 +25,15 @@ export interface Settings {
     marker: MarkerTune | null; // the color of the marker counts are written on bags with
     readMarker: boolean; // read the count written in that color off each bag's photo
     markerConfidence: number; // 0-100: counts read below this are not used
+    driveUrl: string; // the Drive script's web app URL, ending in /exec
+    driveToken: string; // the TOKEN the Drive script was given
 }
 
 export const DEFAULTS: Settings = {
     autoScan: true, autoSave: true, savePhotos: true, bridgeUrl: "", labelW: 40, labelH: 30, density: 4,
     cameraId: "", zoom: 1, stills: true, textFallback: false, ocrConfidence: 70, led: true, currentBagId: null,
     batchMode: false, currentBatchId: null, typeHints: {}, sortItems: "scanned", marker: null, readMarker: false,
-    markerConfidence: 70,
+    markerConfidence: 70, driveUrl: "", driveToken: "",
 };
 
 const KEY = "qr-sort.settings";

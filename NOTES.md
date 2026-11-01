@@ -187,3 +187,25 @@ gantt
   bare newline on open to clear any partial line. The protocol is a dependency-free lib so
   `fw-test` runs it on the host; `.cargo/config.toml` stays inside firmware/ because its
   `build.target` applies to every crate below it.
+- **Drive import through Apps Script**: the data lives in the browser, so the Drive side is a web
+  app the page fetches rather than a script that writes anywhere. Apps Script sends ContentService
+  answers with `Access-Control-Allow-Origin: *`, but a domain-only deployment answers a cross-site
+  fetch with a login redirect, so the deployment is "Anyone" and a token guards it. The token rides
+  in the query because `doGet` cannot read request headers, and the fetch stays a plain GET: a custom
+  header would need a CORS preflight, which Apps Script cannot answer.
+- **Cells from the script, mapping in the app**: the script returns CSV text and each visible
+  sheet's display values (part numbers keep leading zeros, quantities may read "1,000"); CSV
+  parsing and heading matching happen in `importer.ts`, where they are tested. `Utilities.parseCsv`
+  is not used. Drive v3 listing with `corpora: "allDrives"` and `supportsAllDrives` reaches shared
+  drives from a folder id alone, and shortcuts are followed.
+- **Import keys**: a row's key hashes what identifies the bag (part numbers, name, code, date code,
+  lot, created), not its count, place or notes, plus the row's occurrence number among rows with the
+  same identity across the whole source (`drive:<folder>`, `file:<name>`). Importing again adds only
+  new rows; a count corrected or a row moved to another tab is not a new bag, while a part number
+  corrected is (the old record stays). Row-number keys were rejected: inserting one row would shift
+  every key after it.
+- **Places on import**: "Bag 3" means bag-3, the printed label, and is made with that number while
+  it is free (the counter is moved past it), so a CSV export restored into an empty browser keeps
+  its label numbers. Names match ignoring case, inside the box (shelf) the row names, else anywhere.
+  The bag named after a file is looked for only in the row's own box, or in no box, so rows naming
+  no box never land in another box's copy of it.

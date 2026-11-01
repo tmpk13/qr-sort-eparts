@@ -71,3 +71,21 @@ run = """
 set -o pipefail
 cargo test -q --lib --target "$(rustc -vV | sed -n 's/^host: //p')" 2>&1 | tail -n 40
 """
+
+[tasks.drive-check]
+description = "Ask the deployed Drive script what an import would read: each table and its rows"
+usage = '''
+arg "<url>" help="the web app URL, ending in /exec"
+arg "<token>" help="the TOKEN in the script properties"
+'''
+shell = "bash -c"
+run = '''
+set -o pipefail
+curl -sSL -G --data-urlencode "token=${usage_token}" "${usage_url}" | jq -r '
+    if .ok then
+        (.tables[] | "\(.name): \(if .rows then (.rows | length) else (.csv | split("\n") | map(select(test("\\S"))) | length) end) rows"),
+        (.errors[] | "\(.file): \(.error)"),
+        (.ignored[] | "\(.): not a CSV file or Google Sheet")
+    else "error: \(.error)" end' \
+    || echo "no JSON answer: is the deployment's access Anyone, and the URL the /exec one?" >&2
+'''

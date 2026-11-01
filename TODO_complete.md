@@ -40,3 +40,6 @@
 - "Retake last" replaces the photo of the bag saved last.
 - Marker count: pick the marker color in a picture, tune with a live isolated preview, read the
   written count on each saved bag (and from an item's photo in Browse).
+- Import from Google Drive: an Apps Script web app (drive/) answers with every CSV file and Sheet in
+  a folder; Settings > Import matches columns by heading, files rows by bag, box and shelf name or
+  number, and skips rows imported before. Local CSV files import the same way.

@@ -189,7 +189,8 @@ input:focus, select:focus, textarea:focus {
     min-height: 2.6rem;
 }
 
-.btn:disabled {
+.btn:disabled,
+.btn.disabled {
     opacity: 0.5;
     cursor: default;
 }

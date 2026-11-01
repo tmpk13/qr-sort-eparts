@@ -80,6 +80,15 @@ export class Db {
         return n;
     }
 
+    /** Makes sure a counter never hands out n again, for a record made with a number of its own. */
+    async reserveNumber(counter: Kind | "item", n: number): Promise<void> {
+        const tx = this.db.transaction("counters", "readwrite");
+        if (((await tx.store.get(counter)) ?? 0) < n) {
+            await tx.store.put(n, counter);
+        }
+        await tx.done;
+    }
+
     async nextId(kind: Kind): Promise<string> {
         return makeId(kind, await this.nextNumber(kind));
     }

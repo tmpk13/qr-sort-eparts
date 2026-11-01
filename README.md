@@ -54,8 +54,29 @@ HTTPS, hence `serve-tls` for phones.
   print labels, open items. Items sort as scanned or by type then value, in each bag and in a box's
   "All parts" list. "Not placed" collects anything without a home. Edit mode selects with click and
   shift-click and moves items to a bag, bags to a box, boxes to a shelf. Export CSV.
+- **Import**: in Settings, every CSV file and Google Sheet in a Drive folder (through the Drive
+  script below), or one CSV file. Columns are matched by heading: qr-sort's own CSV and distributor
+  order exports; other columns go in the notes. Rows go in the bag, box and shelf they name
+  ("Bag 3", "Bag 3: Resistors" or a name), made when missing, else in a bag named after their file.
+  Importing again adds only new rows.
 - **Settings**: the toggles, text confidence, the marker color, the status LED, the bridge URL and
-  label size, the camera, backups, CSV.
+  label size, the camera, imports, backups, CSV.
+
+## Import from Google Drive
+
+`drive/Code.gs` is an Apps Script web app that answers with the cells of every CSV file and Google
+Sheet in one Drive folder (shared drives too). Setup, also written at the top of the script:
+
+1. At script.google.com, a new project: `drive/Code.gs` as Code.gs, `drive/appsscript.json` as the
+   manifest (Project Settings > "Show appsscript.json in editor").
+2. Script properties: `FOLDER_ID`, the last part of the folder's URL; `RECURSIVE` = `true` for
+   subfolders.
+3. Run `makeToken` once (grants read-only access, logs the token); `checkFolder` shows what is read.
+4. Deploy > Web app, execute as Me, access Anyone. Settings > Import takes the `/exec` URL and the
+   token; `mise run drive-check <url> <token>` asks the same from a terminal.
+
+The token is the only guard on the folder. Workspace domains that forbid "Anyone" deployments cannot
+serve it this way.
 
 ## Status LED (optional)
 
@@ -96,6 +117,9 @@ classDiagram
     class LedLink { pyserial, 1209:0001 }
     class Firmware { RP2040 CDC-ACM, PWM GP2-4 }
     class csv { toCsv() }
+    class ImportPanel
+    class importer { parseCsv() tableRows() importTables() fetchDrive() }
+    class DriveScript { drive/Code.gs: doGet() }
     class selection { editRows() selectRows() }
     class nav { goTo() takeFocus() }
     App --> InventoryView
@@ -119,6 +143,10 @@ classDiagram
     FindView --> nav : open in Browse
     BrowseView --> selection
     BrowseView --> csv
+    SettingsView --> ImportPanel
+    ImportPanel --> importer
+    importer --> Store : importRows()
+    importer --> DriveScript : GET ?token
     led --> Bridge : POST /api/led
     Bridge --> LedLink
     LedLink --> Firmware : color lines
@@ -139,7 +167,8 @@ classDiagram
 ## Tests
 
 ```sh
-mise run test     # bun unit tests (parser, values, marker, model, auto capture, labels, store, decoder, CSV) + pytest for the bridge
+mise run test     # bun unit tests (parser, values, marker, model, auto capture, labels, store, decoder, CSV,
+                  # import, the Drive script on stand-in services) + pytest for the bridge
 mise run e2e      # the built app in Chromium with a fake camera showing bag codes
 mise run fw-test  # the LED firmware's line protocol, on this machine
 ```

@@ -531,4 +531,52 @@ describe.skipIf(!enabled)("app in a browser", () => {
         }
         expect(errors).toEqual([]);
     }, 120000);
+
+    test("importing a Drive folder and a CSV file; importing the folder again adds nothing", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("qrsort:box:1", "QRCode"), errors);
+        try {
+            // The Drive script, answering from another origin the way Apps Script does.
+            const asked: string[] = [];
+            await page.route("https://script.google.com/**", (route) => {
+                asked.push(route.request().url());
+                return route.fulfill({ contentType: "application/json", headers: { "access-control-allow-origin": "*" },
+                    body: JSON.stringify({ ok: true, folder: "F1", errors: [], ignored: ["notes.docx"], tables: [
+                        { name: "Order 1.csv", kind: "csv", csv: "Index,Quantity,Part Number,Manufacturer Part Number,"
+                            + "Description\r\n1,100,311-10KARCT-ND,RC0805FR-0710KL,RES 10K OHM 1% 1/8W 0805\r\n" },
+                        { name: "Stock", kind: "sheet", rows: [["MPN", "Bag", "Box", "Shelf"],
+                            ["GRM188R71H104KA93D", "Caps", "Box 1: Passives", "Left wall"]] },
+                    ] }) });
+            });
+            await page.goto(`${site.url}/#settings`);
+            const panel = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "Import" }) });
+            await page.getByLabel("Drive script URL").fill("https://script.google.com/macros/s/ID/exec");
+            await page.getByLabel("Token").fill("s3cret");
+            await page.getByRole("button", { name: "Import from Drive" }).click();
+            await panel.getByText("2 items added, 0 imported before, 0 rows skipped; made 1 shelf, 1 box, 2 bags")
+                .waitFor();
+            expect(asked).toEqual(["https://script.google.com/macros/s/ID/exec?token=s3cret"]);
+            await panel.getByText("notes.docx: not a CSV file or Google Sheet").waitFor();
+            await shot(page, "import");
+            await page.getByRole("button", { name: "Import from Drive" }).click();
+            await panel.getByText("0 items added, 2 imported before, 0 rows skipped").waitFor();
+            await page.getByLabel("Import CSV file").setInputFiles({ name: "extra.csv", mimeType: "text/csv",
+                buffer: Buffer.from("mpn,bag\nSN74LVC1G08DBVR,Caps\n") });
+            await panel.getByText("1 item added, 0 imported before, 0 rows skipped").waitFor();
+
+            await page.getByRole("button", { name: "Browse" }).click();
+            const tree = page.locator(".tree");
+            await tree.locator("summary").filter({ hasText: "Box 1: Passives" }).click();
+            const caps = tree.locator("xpath=.//details[summary[contains(., 'Bag 2: Caps')]]");
+            await caps.locator("xpath=./summary").click();
+            await caps.getByText("100nF GRM188R71H104KA93D").waitFor();
+            await caps.getByText("SN74LVC1G08DBVR").waitFor();
+            const order = tree.locator("xpath=.//details[summary[contains(., 'Bag 1: Order 1.csv')]]");
+            await order.locator("xpath=./summary").click();
+            await order.getByText("10k RES 10K OHM 1% 1/8W 0805").waitFor();
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 60000);
 });

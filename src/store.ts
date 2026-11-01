@@ -2,7 +2,8 @@
 // notifies the subscribed components.
 import { useEffect, useState } from "preact/hooks";
 import { Db, type Backup } from "./db.ts";
-import { emptyData, findRescan, hasIdentity, isUnidentified, normalizeItem, randomCode, UNIDENTIFIED,
+import { findPlace, placeRef, type ImportRow, type Made, type PlaceRef } from "./importer.ts";
+import { emptyData, findRescan, hasIdentity, isUnidentified, makeId, normalizeItem, randomCode, UNIDENTIFIED,
     unidentifiedKind, type Bag, type Batch, type Box, type Data, type Item, type Shelf, type Unidentified }
     from "./model.ts";
 
@@ -317,6 +318,85 @@ export class Store {
         });
     }
 
+    /**
+     * Files imported rows as new items, finding or making their shelves, boxes and bags; a row whose
+     * key is taken already is left out. Says for each row whether it was added.
+     */
+    importRows(rows: ImportRow[]): Promise<{ added: boolean[]; made: Made }> {
+        return this.run(async () => {
+            // Copies that the import adds to as it goes, so later rows find what earlier ones made.
+            const d = this.data;
+            this.data = { ...d, shelves: [...d.shelves], boxes: [...d.boxes], bags: [...d.bags], items: [...d.items] };
+            const keys = new Set(this.data.items.map((i) => i.importKey).filter(Boolean));
+            const made: Made = { shelves: 0, boxes: 0, bags: 0 };
+            const added: boolean[] = [];
+            try {
+                for (const row of rows) {
+                    if (keys.has(row.key)) {
+                        added.push(false);
+                        continue;
+                    }
+                    keys.add(row.key);
+                    // A named box or bag is looked for in the place the row names, or anywhere when it names
+                    // none; the bag named after the table only in the row's box, or in no box.
+                    const shelf = row.shelf ? await this.importPlace("shelf", placeRef("shelf", row.shelf), undefined,
+                        made) : null;
+                    const box = row.box ? await this.importPlace("box", placeRef("box", row.box), shelf ?? undefined,
+                        made) : null;
+                    const bag = row.bag ? await this.importPlace("bag", placeRef("bag", row.bag), box ?? undefined, made)
+                        : await this.importPlace("bag", { n: null, name: row.table }, box, made);
+                    const r = await this.put({ ...blankItem(bag), ...row.item, bagId: bag, batchId: null,
+                        importKey: row.key });
+                    if (!r.rescan) {
+                        this.data.items.push(r.item);
+                    }
+                    added.push(!r.rescan);
+                }
+            } finally {
+                await this.refresh();
+            }
+            return { added, made };
+        });
+    }
+
+    /** The shelf, box or bag a row names; made when there is none, with the row's number while it is free. */
+    private async importPlace(kind: "shelf" | "box" | "bag", ref: PlaceRef, within: string | null | undefined,
+        made: Made): Promise<string> {
+        const d = this.data;
+        const things: (Shelf | Box | Bag)[] = kind === "shelf" ? d.shelves : kind === "box" ? d.boxes : d.bags;
+        const parentOf = (t: Shelf | Box | Bag) => ("shelfId" in t ? t.shelfId : "boxId" in t ? t.boxId : null);
+        const found = findPlace(kind, ref, things, parentOf, within);
+        if (found) {
+            return found.id;
+        }
+        const parentId = within ?? null;
+        const n = ref.n;
+        const own = n !== null && !things.some((t) => t.id === makeId(kind, n));
+        const id = own ? makeId(kind, n) : await this.db.nextId(kind);
+        if (own) {
+            await this.db.reserveNumber(kind, n);
+        }
+        const created = Date.now();
+        if (kind === "shelf") {
+            const s: Shelf = { id, name: ref.name, created };
+            await this.db.putShelf(s);
+            d.shelves.push(s);
+            made.shelves++;
+        } else if (kind === "box") {
+            const position = parentId ? this.boxesOn(parentId).length + 1 : null;
+            const b: Box = { id, name: ref.name, shelfId: parentId, position, created };
+            await this.db.putBoxes([b]);
+            d.boxes.push(b);
+            made.boxes++;
+        } else {
+            const b: Bag = { id, name: ref.name, boxId: parentId, created };
+            await this.db.putBag(b);
+            d.bags.push(b);
+            made.bags++;
+        }
+        return id;
+    }
+
     exportBackup(): Promise<Backup> {
         return this.db.export();
     }
@@ -348,5 +428,5 @@ export function blankItem(bagId: string | null, batchId: string | null = null): 
     const now = Date.now();
     return { id: crypto.randomUUID(), seq: 0, bagId, batchId, type: "", value: "", name: "", mpn: "", vendorPn: "",
         qty: null, count: null, dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", merged: [],
-        flags: [], hasPhoto: false, created: now, updated: now };
+        flags: [], hasPhoto: false, importKey: "", created: now, updated: now };
 }

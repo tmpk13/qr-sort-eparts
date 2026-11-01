@@ -46,10 +46,13 @@ export interface Item {
     lot: string;
     country: string;
     notes: string;
-    source: string; // what the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, unknown (no part number), manual
+    // What the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, unknown (no part number), manual, or
+    // import (a row of a parts list).
+    source: string;
     raw: string; // the decoded code, verbatim
     merged: string[]; // raw codes of later bags that older versions summed into this record
     flags: string[]; // markers on the record, such as UNIDENTIFIED
+    importKey: string; // on records imported from a parts list: the same row imported again has the same key
     hasPhoto: boolean;
     created: number;
     updated: number;
@@ -154,7 +157,7 @@ export function randomCode(n = 4): string {
 export function normalizeItem(x: Partial<Item> & { id: string }): Item {
     return {
         seq: 0, bagId: null, batchId: null, type: "", name: "", mpn: "", vendorPn: "", qty: null,
-        dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", hasPhoto: false,
+        dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", hasPhoto: false, importKey: "",
         created: 0, updated: 0, ...x,
         count: x.count === undefined ? x.qty ?? null : x.count,
         merged: x.merged ?? [],

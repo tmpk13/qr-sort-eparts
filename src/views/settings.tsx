@@ -1,4 +1,5 @@
-// Settings: scanning defaults, the marker count, the print bridge, label size, camera choice and backups.
+// Settings: scanning defaults, the marker count, the print bridge, label size, camera choice, imports
+// and backups.
 import { useState } from "preact/hooks";
 import { bridgeUrl, downloadBlob, printerInfo, type PrinterInfo } from "../printer.ts";
 import { DEFAULTS, useSettings } from "../settings.ts";
@@ -7,6 +8,7 @@ import { blankItem, store, useData } from "../store.ts";
 import { Field, Toggle, toast, val } from "../ui.tsx";
 import { valueFromPartNumber } from "../value.ts";
 import { exportCsv } from "./browse.tsx";
+import { ImportPanel } from "./import.tsx";
 import { MarkerPanel } from "./marker.tsx";
 
 export function SettingsView() {
@@ -182,6 +184,8 @@ export function SettingsView() {
                     <button class="btn" onClick={listCameras}>List cameras</button>
                 </div>
             </div>
+
+            <ImportPanel />
 
             <div class="panel stack">
                 <h2 style="margin:0">Data</h2>

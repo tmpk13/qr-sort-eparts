@@ -6,3 +6,4 @@ __pycache__/
 .screenshots/
 firmware/target/
 test-data/
+ref/
