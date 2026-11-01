@@ -1,11 +1,13 @@
-// Settings: scanning defaults, the print bridge, label size, camera choice and backups.
+// Settings: scanning defaults, the marker count, the print bridge, label size, camera choice and backups.
 import { useState } from "preact/hooks";
 import { bridgeUrl, downloadBlob, printerInfo, type PrinterInfo } from "../printer.ts";
 import { DEFAULTS, useSettings } from "../settings.ts";
 import type { Item } from "../model.ts";
 import { blankItem, store, useData } from "../store.ts";
 import { Field, Toggle, toast, val } from "../ui.tsx";
+import { valueFromPartNumber } from "../value.ts";
 import { exportCsv } from "./browse.tsx";
+import { MarkerPanel } from "./marker.tsx";
 
 export function SettingsView() {
     const [s, setS] = useSettings();
@@ -30,11 +32,6 @@ export function SettingsView() {
         } catch (err) {
             setLed(`no bridge: ${(err as Error).message}`);
         }
-    };
-
-    const mergeDuplicates = async () => {
-        const n = await store.mergeDuplicates();
-        toast(n ? `Merged ${n} records into ones of the same part in the same box` : "No duplicates to merge", "ok");
     };
 
     const test = async () => {
@@ -85,8 +82,8 @@ export function SettingsView() {
         await store.createBag("Ceramic caps", boxes[0].id);
         const bag2 = await store.createBag("Logic", boxes[1].id);
         const now = Date.now();
-        const item = (bagId: string, fields: Partial<Item>) => ({ ...blankItem(bagId), count: fields.qty ?? null, ...fields,
-            created: now, updated: now });
+        const item = (bagId: string, fields: Partial<Item>) => ({ ...blankItem(bagId), count: fields.qty ?? null,
+            value: valueFromPartNumber(fields.mpn ?? ""), ...fields, created: now, updated: now });
         await store.saveItem(item(bag.id, { type: "resistor", mpn: "RC0805FR-0710KL", vendorPn: "311-10KARCT-ND", qty: 100,
             dateCode: "2310", source: "digikey" }));
         await store.saveItem(item(bag.id, { type: "resistor", mpn: "RC0805FR-071KL", vendorPn: "311-1.0KARCT-ND", qty: 100,
@@ -126,10 +123,13 @@ export function SettingsView() {
                 )}
                 <p class="hint">
                     Codes in view count when they name a part: Data Matrix, QR and PDF417 codes, or rows of 1D
-                    barcodes with data identifiers (1P, Q, ...). Codes without a part number go to the
-                    unidentified codes. Text reads below the minimum confidence are not used by themselves.
+                    barcodes with data identifiers (1P, Q, ...). A code without a part number is saved where it
+                    was scanned, flagged unidentified. Text reads below the minimum confidence are not used by
+                    themselves.
                 </p>
             </div>
+
+            <MarkerPanel />
 
             <div class="panel stack">
                 <h2 style="margin:0">Status LED</h2>
@@ -140,8 +140,8 @@ export function SettingsView() {
                     {led && <span class="badge">{led}</span>}
                 </div>
                 <p class="hint">
-                    Green: saved. Magenta: unidentified. Orange: the part belongs in another bag, or was counted
-                    already. Red: error. Nothing happens when no LED is attached.
+                    Green: saved. Magenta: saved unidentified, with a code. Violet: saved unidentified, with no
+                    code. Orange: that label was counted already. Red: error. Nothing happens when no LED is attached.
                 </p>
             </div>
 
@@ -208,11 +208,10 @@ export function SettingsView() {
                         <button class="btn" onClick={loadSample}>Load sample data</button>
                     )}
                     <button class="btn" onClick={() => setS({ typeHints: {} })}>Forget learned types ({Object.keys(s.typeHints).length})</button>
-                    <button class="btn" onClick={mergeDuplicates}>Merge duplicates</button>
                 </div>
                 <p class="hint">
-                    Each box keeps one record per part number: a second bag of a part adds to the first one's
-                    bag quantity and count. Merge duplicates applies that to records made before, or restored.
+                    Each bag scanned is a record of its own, even for a part that is already in the box; the same
+                    label scanned twice in a box counts once.
                 </p>
             </div>
         </div>

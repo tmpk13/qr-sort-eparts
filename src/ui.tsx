@@ -3,12 +3,14 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { canvasPng, renderLabel } from "./label.ts";
-import { display, itemTag, qrPayload, title, unidentifiedKind, type Bag, type Item } from "./model.ts";
+import { display, isUnidentified, itemName, itemTag, qrPayload, title, unidentifiedKind, type Bag, type Item }
+    from "./model.ts";
 import { TYPES } from "./parse.ts";
 import { downloadBlob, printPng, printerInfo, type PrinterInfo } from "./printer.ts";
 import { Camera, Decoder, DIGITAL_ZOOM, Scanner, type Detection, type FrameInfo, type ZoomRange } from "./scanner.ts";
 import { settings, useSettings } from "./settings.ts";
 import { store } from "./store.ts";
+import { valueFromPartNumber } from "./value.ts";
 
 // ---- toasts ----
 type ToastKind = "info" | "ok" | "err";
@@ -372,11 +374,19 @@ export function ItemForm(p: { item: Item; onChange: (i: Item) => void; bags?: Ba
                 <input list="qr-sort-types" value={p.item.type} onInput={(e) => set({ type: val(e) })} />
                 <datalist id="qr-sort-types">{[...used].sort().map((t) => <option value={t} />)}</datalist>
             </Field>
+            <Field label="Value">
+                <input value={p.item.value} placeholder="10k, 100nF" onInput={(e) => set({ value: val(e) })} />
+            </Field>
             <Field label="Name / description">
                 <input value={p.item.name} onInput={(e) => set({ name: val(e) })} />
             </Field>
             <Field label="Manufacturer PN">
-                <input value={p.item.mpn} onInput={(e) => set({ mpn: val(e) })} class="mono" />
+                <input value={p.item.mpn} class="mono" onInput={(e) => {
+                    const mpn = val(e);
+                    // The value follows the part number while it is the one read from it, or empty.
+                    const follows = !p.item.value || p.item.value === valueFromPartNumber(p.item.mpn);
+                    set(follows ? { mpn, value: valueFromPartNumber(mpn) } : { mpn });
+                }} />
             </Field>
             <Field label={vendor}>
                 <input value={p.item.vendorPn} onInput={(e) => set({ vendorPn: val(e) })} class="mono" />
@@ -451,10 +461,23 @@ export function Tag(p: { item: Item }) {
     return <span class="tag mono">{itemTag(p.item)}</span>;
 }
 
-/** The marker class of a record waiting to be identified (magenta for codes, violet for photos), else "". */
-export function waitingClass(item: Pick<Item, "source">): string {
+/** The marker class of an unidentified record (magenta with a code, violet without), else "". */
+export function waitingClass(item: Pick<Item, "flags" | "raw">): string {
     const kind = unidentifiedKind(item);
     return kind === "code" ? "unknown" : kind === "photo" ? "nocode" : "";
+}
+
+/** "I-12 10k RC0805FR-0710KL": the short id, the value when there is one, the name, and its flags. */
+export function ItemTitle(p: { item: Item }) {
+    const kind = unidentifiedKind(p.item);
+    return (
+        <div class="title">
+            <Tag item={p.item} />{" "}
+            {p.item.value && <><span class="value">{p.item.value}</span>{" "}</>}
+            {itemName(p.item)}
+            {isUnidentified(p.item) && <> <span class={`flag ${kind === "code" ? "flag-code" : "flag-photo"}`}>unidentified</span></>}
+        </div>
+    );
 }
 
 export function Thumb(p: { item: Item }) {

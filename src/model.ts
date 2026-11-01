@@ -1,4 +1,6 @@
 // Data model shared by the views, the database and the tests.
+import { TYPES } from "./parse.ts";
+import { compareValues, valueFromPartNumber } from "./value.ts";
 
 export interface Shelf {
     id: string; // "shelf-3"
@@ -34,18 +36,20 @@ export interface Item {
     bagId: string | null;
     batchId: string | null; // the batch it was scanned in, until that batch is cleared
     type: string;
+    value: string; // component value as usually written ("10k", "100nF"); guessed from the part number, editable
     name: string;
     mpn: string; // manufacturer part number
     vendorPn: string; // distributor part number (DigiKey, Mouser, LCSC)
-    qty: number | null; // bag quantity: what the labels said, summed over every bag merged in
+    qty: number | null; // bag quantity: what the label said
     count: number | null; // current count on hand
     dateCode: string;
     lot: string;
     country: string;
     notes: string;
-    source: string; // what the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, manual, unknown; photo when none read
+    source: string; // what the code on the bag was: digikey, mouser, lcsc, iso15434, ocr, unknown (no part number), manual
     raw: string; // the decoded code, verbatim
-    merged: string[]; // raw codes of later bags merged into this record
+    merged: string[]; // raw codes of later bags that older versions summed into this record
+    flags: string[]; // markers on the record, such as UNIDENTIFIED
     hasPhoto: boolean;
     created: number;
     updated: number;
@@ -92,7 +96,7 @@ export function display(thing: { id: string; name: string } | null | undefined):
     return thing.name ? `${title(thing.id)}: ${thing.name}` : title(thing.id);
 }
 
-export function itemName(item: Pick<Item, "name" | "mpn" | "vendorPn" | "raw" | "source">): string {
+export function itemName(item: Pick<Item, "name" | "mpn" | "vendorPn" | "raw" | "flags">): string {
     return item.name || item.mpn || item.vendorPn || printable(item.raw)
         || (unidentifiedKind(item) === "photo" ? "(photo, no code)" : "(unnamed)");
 }
@@ -108,21 +112,23 @@ export function printable(text: string): string {
 }
 
 /**
- * Why a record waits to be identified: its code had no part number in it ("code"), or its bag had no
- * code that would read and only a photo was kept ("photo").
+ * The flag on a record nobody has identified yet: it goes where it was scanned like any other and
+ * keeps the flag, wherever it is moved, until it gets a part number or a name.
+ */
+export const UNIDENTIFIED = "unidentified";
+
+/**
+ * What an unidentified record has to go on: a code with no part number in it ("code"), or no code
+ * at all, usually a photo ("photo").
  */
 export type Unidentified = "code" | "photo";
 
-export function unidentifiedKind(item: Pick<Item, "source">): Unidentified | null {
-    return item.source === "unknown" ? "code" : item.source === "photo" ? "photo" : null;
+export function isUnidentified(item: Pick<Item, "flags">): boolean {
+    return item.flags.includes(UNIDENTIFIED);
 }
 
-/**
- * A record that waits in a list of its own until someone identifies it. Where it is kept does not
- * matter: putting it in a bag, or its bag in a box, leaves it waiting.
- */
-export function isUnidentified(item: Pick<Item, "source">): boolean {
-    return unidentifiedKind(item) !== null;
+export function unidentifiedKind(item: Pick<Item, "flags" | "raw">): Unidentified | null {
+    return !isUnidentified(item) ? null : item.raw ? "code" : "photo";
 }
 
 /** What identifies a record by hand: a part number or a name. */
@@ -152,77 +158,56 @@ export function normalizeItem(x: Partial<Item> & { id: string }): Item {
         created: 0, updated: 0, ...x,
         count: x.count === undefined ? x.qty ?? null : x.count,
         merged: x.merged ?? [],
+        // A record from before values were kept gets one read from its part number, once.
+        value: x.value ?? valueFromPartNumber(x.mpn ?? ""),
+        // Before flags the source said it: a code with no part number, or a photo with no code.
+        flags: x.flags ?? (x.source === "unknown" || x.source === "photo" ? [UNIDENTIFIED] : []),
     };
 }
 
 /**
- * The place inside which a part number may appear only once: the box when the bag is in one, else
- * the bag, else the batch, else "loose". Records waiting to be identified share one place of their
- * own, wherever they are kept.
+ * The place inside which one label counts once: the box when the bag is in one, else the bag, else
+ * the batch, else "loose".
  */
-export function scopeOf(item: Pick<Item, "bagId" | "batchId" | "source">, data: Pick<Data, "bags">): string {
-    if (isUnidentified(item)) {
-        return "unknown";
-    }
+export function scopeOf(item: Pick<Item, "bagId" | "batchId">, data: Pick<Data, "bags">): string {
     if (item.bagId) {
         return data.bags.find((b) => b.id === item.bagId)?.boxId ?? item.bagId;
     }
     return item.batchId ?? "loose";
 }
 
-/** What makes two records the same part; empty for a record with nothing to compare. */
-export function partKey(item: Pick<Item, "mpn" | "vendorPn" | "raw" | "source">): string {
-    if (isUnidentified(item)) {
-        return item.raw ? `raw:${item.raw}` : "";
-    }
-    const pn = (item.mpn || item.vendorPn).trim().toUpperCase();
-    return pn ? `pn:${pn}` : "";
-}
-
-/** Another record of the same part in the same place, which this one should be merged into. */
-export function findTwin(item: Item, data: Pick<Data, "bags" | "items">): Item | undefined {
-    const key = partKey(item);
-    if (!key) {
+/**
+ * An earlier record of the same label in the same place: the same bag scanned twice. Different
+ * bags of one part are separate records, even with the same part number.
+ */
+export function findRescan(item: Item, data: Pick<Data, "bags" | "items">): Item | undefined {
+    if (!item.raw) {
         return undefined;
     }
     const scope = scopeOf(item, data);
-    return data.items
-        .filter((o) => o.id !== item.id && partKey(o) === key && scopeOf(o, data) === scope)
-        .sort((a, b) => a.created - b.created)[0];
+    return data.items.find((o) => o.id !== item.id && (o.raw === item.raw || o.merged.includes(item.raw))
+        && scopeOf(o, data) === scope);
 }
 
-/** True when the incoming record is a label already counted in the target (the same bag scanned twice). */
-export function isRescan(target: Item, incoming: Item): boolean {
-    const known = new Set([target.raw, ...target.merged]);
-    const codes = [incoming.raw, ...incoming.merged].filter(Boolean);
-    return codes.length > 0 && codes.every((c) => known.has(c));
+export type ItemOrder = "scanned" | "type";
+
+/** Types in the order of TYPES, ones typed in by hand after them alphabetically, no type last. */
+function compareTypes(a: string, b: string): number {
+    const rank = (t: string) => (!t ? 2 : TYPES.includes(t) ? 0 : 1);
+    return rank(a) - rank(b) || (TYPES.includes(a) && TYPES.includes(b) ? TYPES.indexOf(a) - TYPES.indexOf(b)
+        : a.localeCompare(b));
 }
 
-function add(a: number | null, b: number | null): number | null {
-    return a == null && b == null ? null : (a ?? 0) + (b ?? 0);
-}
-
-/** The target with the incoming bag added: quantities summed, blanks filled, codes remembered. */
-export function mergeInto(target: Item, incoming: Item): Item {
-    if (isRescan(target, incoming)) {
-        return target;
+/** Items as scanned, or by type, then value (by size), then name with unidentified ones last. */
+export function sortItems(items: Item[], order: ItemOrder): Item[] {
+    const scanned = (a: Item, b: Item) => a.created - b.created || a.seq - b.seq;
+    if (order !== "type") {
+        return [...items].sort(scanned);
     }
-    const codes = [incoming.raw, ...incoming.merged].filter((r) => r && r !== target.raw && !target.merged.includes(r));
-    const notes = [target.notes, incoming.notes].filter(Boolean);
-    return {
-        ...target,
-        qty: add(target.qty, incoming.qty),
-        count: add(target.count, incoming.count),
-        type: target.type || incoming.type,
-        name: target.name || incoming.name,
-        mpn: target.mpn || incoming.mpn,
-        vendorPn: target.vendorPn || incoming.vendorPn,
-        dateCode: target.dateCode || incoming.dateCode,
-        lot: target.lot || incoming.lot,
-        country: target.country || incoming.country,
-        notes: [...new Set(notes)].join("\n"),
-        merged: [...target.merged, ...codes],
-    };
+    return [...items].sort((a, b) => compareTypes(a.type.toLowerCase(), b.type.toLowerCase())
+        || (a.value && b.value ? compareValues(a.value, b.value) : Number(!a.value) - Number(!b.value))
+        || Number(isUnidentified(a)) - Number(isUnidentified(b))
+        || itemName(a).localeCompare(itemName(b), undefined, { numeric: true }) || scanned(a, b));
 }
 
 export const QR_PREFIX = "qrsort:";
@@ -316,10 +301,10 @@ export function search(query: string, data: Data, limit = 50): Hit[] {
     };
     for (const item of data.items) {
         const place = placeOfBag(item.bagId, data);
-        consider("item", item.id, `${item.mpn} ${item.name} ${itemTag(item)}`,
+        const kind = unidentifiedKind(item);
+        consider("item", item.id, `${item.mpn} ${item.name} ${itemTag(item)} ${item.value}`,
             [item.vendorPn, item.type, item.notes, item.lot, item.dateCode, display(place.bag), display(place.box),
-                unidentifiedKind(item) === "photo" ? "unidentified photo no code"
-                    : isUnidentified(item) ? `unidentified ${printable(item.raw)}` : ""].join(" "));
+                ...item.flags, kind === "photo" ? "photo no code" : kind === "code" ? printable(item.raw) : ""].join(" "));
     }
     for (const bag of data.bags) {
         consider("bag", bag.id, display(bag), display(data.boxes.find((b) => b.id === bag.boxId)));

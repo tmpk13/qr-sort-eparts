@@ -1,12 +1,13 @@
 // Find: search for an item, bag or box, then follow the camera's directions along the shelf.
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { ledSteady } from "../led.ts";
-import { display, guide, itemName, itemTag, parseQrPayload, placeOfBag, placeText, search, title, type Bag, type Box,
-    type Data, type Hit, type LabelKind } from "../model.ts";
+import { display, guide, itemName, itemTag, parseQrPayload, placeOfBag, placeText, search, sortItems, title, type Bag,
+    type Box, type Data, type Hit, type LabelKind } from "../model.ts";
 import { goTo } from "../nav.ts";
 import { FORMATS_LABELS, type Detection } from "../scanner.ts";
+import { useSettings } from "../settings.ts";
 import { store, useData } from "../store.ts";
-import { CameraPanel, QtyBadge, Tag, Thumb, val } from "../ui.tsx";
+import { CameraPanel, ItemTitle, QtyBadge, Thumb, val, waitingClass } from "../ui.tsx";
 
 interface Target {
     hit: Hit;
@@ -25,7 +26,8 @@ function resolve(hit: Hit | null, data: Data): Target | null {
             return null;
         }
         const p = placeOfBag(item.bagId, data);
-        return { hit, text: `${itemTag(item)} ${itemName(item)}: ${placeText(p)}`, bag: p.bag, box: p.box };
+        const value = item.value ? `${item.value} ` : "";
+        return { hit, text: `${itemTag(item)} ${value}${itemName(item)}: ${placeText(p)}`, bag: p.bag, box: p.box };
     }
     if (hit.kind === "bag") {
         const p = placeOfBag(hit.id, data);
@@ -227,15 +229,16 @@ export function FindView() {
 }
 
 export function ItemList(p: { bagId: string; onPick?: (id: string) => void; focus?: string | null }) {
-    const items = store.itemsIn(p.bagId);
+    const [s] = useSettings();
+    const items = sortItems(store.itemsIn(p.bagId), s.sortItems);
     return (
         <ul class="list">
             {items.map((item) => (
-                <li key={item.id} class={`${p.onPick ? "clickable" : ""}${p.focus === item.id ? " focused" : ""}`}
-                    onClick={() => p.onPick?.(item.id)}>
+                <li key={item.id} class={`${p.onPick ? "clickable" : ""}${p.focus === item.id ? " focused" : ""} ${
+                    waitingClass(item)}`} onClick={() => p.onPick?.(item.id)}>
                     <Thumb item={item} />
                     <div class="grow">
-                        <div class="title"><Tag item={item} /> {itemName(item)}</div>
+                        <ItemTitle item={item} />
                         <div class="small muted">{[item.type, item.vendorPn, item.dateCode].filter(Boolean).join(" / ")}</div>
                     </div>
                     <QtyBadge item={item} />

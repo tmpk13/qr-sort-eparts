@@ -1,7 +1,8 @@
 // Inventory: scan bags into the current bag or batch, with auto capture, auto save and photos.
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { readMarkerCount } from "../marker.ts";
 import { batchTitle, display, hasIdentity, itemName, itemTag, isUnidentified, parseQrPayload, placeOfBag, placeText,
-    title, unidentifiedKind, type Item, type LabelKind } from "../model.ts";
+    title, UNIDENTIFIED, unidentifiedKind, type Item, type LabelKind, type Unidentified } from "../model.ts";
 import { goTo } from "../nav.ts";
 import { ledFlash, ledSteady } from "../led.ts";
 import { readText, warmUp } from "../ocr.ts";
@@ -9,7 +10,8 @@ import { familyKey, guessType, identifiable, parseCode, parseLabelText, type Par
 import { AutoCapture, FORMATS_PARTS, pickCode, type Camera, type Decoder, type Detection } from "../scanner.ts";
 import { settings, useSettings, type Settings } from "../settings.ts";
 import { blankItem, store, useData, type SaveResult } from "../store.ts";
-import { BlobImage, CameraPanel, ItemForm, QtyBadge, Tag, Thumb, Toggle, toast, val, waitingClass, type Flash }
+import { valueFromDescription, valueFromPartNumber } from "../value.ts";
+import { BlobImage, CameraPanel, ItemForm, ItemTitle, QtyBadge, Thumb, Toggle, toast, val, waitingClass, type Flash }
     from "../ui.tsx";
 
 export interface Target {
@@ -37,23 +39,22 @@ export function itemFromParsed(parsed: Parsed, target: Target, s: Settings): Ite
             .filter(Boolean).join("\n");
     }
     if (!identifiable(parsed)) {
-        // Nothing to file it under: it waits among the unidentified codes, out of the bag being filled.
+        // Nothing to file it under: it goes where it was scanned, flagged until someone identifies it.
         item.source = "unknown";
-        item.bagId = null;
-        item.batchId = null;
+        item.flags = [UNIDENTIFIED];
     }
     item.type = s.typeHints[familyKey(parsed.mpn)] ?? guessType(parsed.mpn);
+    item.value = valueFromPartNumber(parsed.mpn) || valueFromDescription(parsed.fields.desc ?? "");
     return item;
 }
 
-/** A bag with no code that will read: only its photo, kept apart like an unidentified code until identified. */
-export function photoItem(): Item {
-    return { ...blankItem(null), source: "photo" };
+/** What a record not saved yet would be flagged as: nothing says what it is, and it has a code or not. */
+function draftKind(item: Item): Unidentified | null {
+    return hasIdentity(item) ? null : item.raw ? "code" : "photo";
 }
 
-/** The camera sign for a record: its own color while it waits to be identified. */
-function signKind(item: Item): Flash["kind"] {
-    const kind = unidentifiedKind(item);
+/** The camera sign for a kind of record: its own color while it is unidentified. */
+function signKind(kind: Unidentified | null): Flash["kind"] {
     return kind === "photo" ? "nocode" : kind === "code" ? "unknown" : "ok";
 }
 
@@ -64,27 +65,35 @@ function waitingText(codes: number, photos: number): string {
     return `${parts.join(" and ")} ${codes + photos === 1 ? "waits" : "wait"} to be identified.`;
 }
 
+/** Where a record is: its bag, else its batch. */
+function whereText(item: Pick<Item, "bagId" | "batchId">): string {
+    return display(store.bag(item.bagId)) || (item.batchId ? title(item.batchId) : "no bag");
+}
+
 /** What the user is told after a save, and the matching camera sign and LED color. */
-export function outcome(r: SaveResult, target: Target): Flash {
+export function outcome(r: SaveResult): Flash {
     const at = Date.now();
-    const what = `${itemTag(r.item)} ${itemName(r.item)}`;
-    const where = display(store.bag(r.item.bagId)) || (r.item.batchId ? title(r.item.batchId) : "no bag");
-    if (unidentifiedKind(r.item) === "photo") {
-        return { kind: "nocode", text: `No code: photo ${itemTag(r.item)} kept apart`, at };
-    }
-    if (isUnidentified(r.item)) {
-        return { kind: "unknown", text: r.rescan ? "Unidentified, already listed" : "Unidentified: kept apart", at };
-    }
+    const what = `${itemTag(r.item)} ${r.item.value ? `${r.item.value} ` : ""}${itemName(r.item)}`;
+    const where = whereText(r.item);
+    const kind = unidentifiedKind(r.item);
     if (r.rescan) {
-        return { kind: "elsewhere", text: `Already counted: ${what} in ${where}`, at };
+        return kind === "code" ? { kind: "unknown", text: `Unidentified, already in ${where}`, at }
+            : { kind: "elsewhere", text: `Already counted: ${what} in ${where}`, at };
     }
-    if (r.into && r.item.bagId !== target.bagId) {
-        return { kind: "elsewhere", text: `${what} is in ${where}: put it there (now x${r.item.count ?? "?"})`, at };
+    if (kind === "photo") {
+        return { kind: "nocode", text: `No code: ${itemTag(r.item)} in ${where}, unidentified`, at };
     }
-    if (r.into) {
-        return { kind: "ok", text: `Added to ${what}, now x${r.item.count ?? "?"}`, at };
+    if (kind === "code") {
+        return { kind: "unknown", text: `Unidentified: ${itemTag(r.item)} in ${where}`, at };
     }
     return { kind: "ok", text: `Saved ${what}${r.item.qty != null ? ` x${r.item.qty}` : ""}`, at };
+}
+
+/** A capture ready to save: the record, the camera's picture, and whether to keep that picture. */
+interface Capture {
+    item: Item;
+    shot: Blob | null;
+    keepShot: boolean;
 }
 
 export function InventoryView() {
@@ -96,6 +105,7 @@ export function InventoryView() {
     const [flash, setFlash] = useState<Flash | null>(null);
     const [textStatus, setTextStatus] = useState("");
     const [batchBag, setBatchBag] = useState("");
+    const [lastId, setLastId] = useState<string | null>(null);
     const rig = useRef<{ camera: Camera; decoder: Decoder } | null>(null);
     const last = useRef<Detection[]>([]);
     const auto = useRef(new AutoCapture(2, 1500));
@@ -116,12 +126,14 @@ export function InventoryView() {
     const photos = data.items.filter((i) => unidentifiedKind(i) === "photo").length;
     const place = placeOfBag(s.currentBagId, data);
     const recent = useMemo(() => [...data.items].sort((a, b) => b.updated - a.updated).slice(0, 8), [data.items]);
+    const lastItem = store.item(lastId);
+    const markerOn = s.readMarker && !!s.marker;
 
     useEffect(() => {
-        if (cameraOn && s.textFallback) {
+        if (cameraOn && (s.textFallback || markerOn)) {
             warmUp();
         }
-    }, [cameraOn, s.textFallback]);
+    }, [cameraOn, s.textFallback, markerOn]);
     useEffect(() => () => ledSteady("off"), []);
     // A new destination, so the bag in view may be meant for it: let it capture again.
     useEffect(() => auto.current.reset(), [s.currentBagId, s.batchMode, s.currentBatchId]);
@@ -178,36 +190,92 @@ export function InventoryView() {
         await keep(async () => {
             const cur = settings.value;
             const t = await target();
-            return { item: itemFromParsed(parsed, t, cur), shot: cur.savePhotos ? await shoot() : null, t };
-        });
-    }
-
-    /** A bag with no code that will read: its photo is kept whether or not photos are being saved. */
-    async function takePhoto(camera: Camera): Promise<void> {
-        await keep(async () => {
-            const shot = await camera.snapshot(0.92);
-            if (!shot) {
-                throw new Error("The camera has no picture yet");
-            }
-            return { item: photoItem(), shot, t: { bagId: null, batchId: null } };
+            // The picture is taken for the marker's count even when photos are not kept.
+            const shot = cur.savePhotos || (cur.readMarker && cur.marker) ? await shoot() : null;
+            return { item: itemFromParsed(parsed, t, cur), shot, keepShot: cur.savePhotos };
         });
     }
 
     /** Saves a capture, or holds it below for checking when auto save is off, and says what became of it. */
-    async function keep(make: () => Promise<{ item: Item; shot: Blob | null; t: Target }>): Promise<void> {
+    async function keep(make: () => Promise<Capture>): Promise<void> {
         busy.current = true;
         try {
-            const { item, shot, t } = await make();
+            const { item, shot, keepShot } = await make();
             if (settings.value.autoSave) {
-                const r = await store.saveItem(item, shot);
-                const o = outcome(r, t);
+                const r = await store.saveItem(item, keepShot ? shot : null);
+                const o = outcome(r);
                 show(o);
                 toast(o.text, isUnidentified(r.item) ? "info" : "ok");
+                setLastId(r.item.id);
+                if (shot && !r.rescan) {
+                    void readCount(r.item.id, true, shot);
+                }
             } else {
                 setDraft(item);
-                setPhoto(shot);
-                show({ kind: signKind(item), text: "Check and save below", at: Date.now() });
+                setPhoto(keepShot ? shot : null);
+                show({ kind: signKind(draftKind(item)), text: "Check and save below", at: Date.now() });
+                if (shot) {
+                    void readCount(item.id, false, shot);
+                }
             }
+        } catch (err) {
+            show({ kind: "err", text: (err as Error).message, at: Date.now() });
+            toast((err as Error).message, "err");
+        } finally {
+            busy.current = false;
+        }
+    }
+
+    /**
+     * Reads the count written on the bag in the marker's color, when that is switched on, into the
+     * saved record or into the draft still open for it.
+     */
+    async function readCount(id: string, saved: boolean, shot: Blob): Promise<void> {
+        const cur = settings.value;
+        if (!cur.readMarker || !cur.marker) {
+            return;
+        }
+        try {
+            const read = await readMarkerCount(shot, cur.marker);
+            if (!read) {
+                return;
+            }
+            const conf = Math.round(read.confidence);
+            if (conf < cur.markerConfidence) {
+                toast(`Marker count ${read.count} read at ${conf}%, below ${cur.markerConfidence}%: not used`);
+                return;
+            }
+            if (!saved) {
+                setDraft((d) => (d && d.id === id ? { ...d, count: read.count } : d));
+                return;
+            }
+            const item = store.item(id);
+            if (item) {
+                await store.saveItem({ ...item, count: read.count });
+                toast(`Count ${read.count} read from the marker for ${itemTag(item)}`, "ok");
+            }
+        } catch (err) {
+            toast(`Reading the marker failed: ${(err as Error).message}`, "err");
+        }
+    }
+
+    /** A new photo for the record saved last, in case the first one missed or blurred. */
+    async function retakeLast(): Promise<void> {
+        const camera = rig.current?.camera;
+        const item = store.item(lastId);
+        if (!camera || !item || busy.current) {
+            return;
+        }
+        busy.current = true;
+        try {
+            const shot = await camera.snapshot(0.92);
+            if (!shot) {
+                throw new Error("The camera has no picture yet");
+            }
+            await store.saveItem(item, shot);
+            show({ kind: "ok", text: `New photo for ${itemTag(item)}`, at: Date.now() });
+            toast(`New photo for ${itemTag(item)} ${itemName(item)}`, "ok");
+            void readCount(item.id, true, shot);
         } catch (err) {
             show({ kind: "err", text: (err as Error).message, at: Date.now() });
             toast((err as Error).message, "err");
@@ -298,6 +366,17 @@ export function InventoryView() {
         await capture(pick.text, () => camera.snapshot());
     }
 
+    /** Opens the form for adding a bag by hand, with a photo when one is given. */
+    async function addByHand(shot: Blob | null): Promise<void> {
+        const t = await target();
+        const item = blankItem(t.bagId, t.batchId);
+        setDraft(item);
+        setPhoto(shot);
+        if (shot) {
+            void readCount(item.id, false, shot);
+        }
+    }
+
     async function scanFile(file: File): Promise<void> {
         const decoder = rig.current?.decoder;
         if (!decoder) {
@@ -323,29 +402,38 @@ export function InventoryView() {
             }
             setTextStatus("");
         }
-        // Nothing in it reads, so it may be a bag with no code: offer to keep the photo to identify later.
-        setDraft(photoItem());
-        setPhoto(file);
+        // Nothing in it reads, so it may be a bag with no code: offer it as one added by hand, with this photo.
+        await addByHand(file);
         toast(settings.value.textFallback ? "No code and no part number in that photo" : "No code found in that photo");
+    }
+
+    /** A photo for the open draft, from the camera or from a file. */
+    async function draftPhoto(shot: Blob | null): Promise<void> {
+        if (!shot || !draft) {
+            toast(shot ? "Nothing to add it to" : "The camera has no picture yet", "err");
+            return;
+        }
+        setPhoto(shot);
+        void readCount(draft.id, false, shot);
     }
 
     async function saveDraft(): Promise<void> {
         if (!draft) {
             return;
         }
-        let item = draft;
-        if (isUnidentified(item) && hasIdentity(item)) {
-            // Identified on the spot (the store files it as an ordinary item), so it goes where scans go now.
-            item = { ...item, ...(await target()) };
+        if (!draft.raw && !photo && !hasIdentity(draft)) {
+            toast("Take a photo, or fill in a part number or a name", "err");
+            return;
         }
-        const key = familyKey(item.mpn);
-        if (key && item.type) {
-            setS({ typeHints: { ...s.typeHints, [key]: item.type } });
+        const key = familyKey(draft.mpn);
+        if (key && draft.type) {
+            setS({ typeHints: { ...s.typeHints, [key]: draft.type } });
         }
-        const r = await store.saveItem(item, photo);
-        const o = outcome(r, item);
+        const r = await store.saveItem(draft, photo);
+        const o = outcome(r);
         show(o);
         toast(o.text, isUnidentified(r.item) ? "info" : "ok");
+        setLastId(r.item.id);
         setDraft(null);
         setPhoto(null);
         auto.current.reset();
@@ -369,8 +457,7 @@ export function InventoryView() {
             return;
         }
         const results = await store.putBatchInBag(batch.id, bagId);
-        const merged = results.filter((r) => r.into).length;
-        toast(`Put ${results.length} items into ${display(store.bag(bagId))}${merged ? `, ${merged} merged` : ""}`, "ok");
+        toast(`Put ${results.length} items into ${display(store.bag(bagId))}`, "ok");
     }
 
     async function clearBatch(): Promise<void> {
@@ -382,8 +469,8 @@ export function InventoryView() {
 
     const status = draft ? "Paused until the item below is saved or discarded"
         : textStatus || (s.autoScan ? "Auto: show a bag, take it away, show the next one" : "Press Scan now");
-    // Saved as it is, the draft would wait among the unidentified records of this kind.
-    const draftWaits = draft && !hasIdentity(draft) ? unidentifiedKind(draft) : null;
+    // Saved as it is, the draft would be flagged as unidentified of this kind.
+    const draftWaits = draft ? draftKind(draft) : null;
 
     return (
         <div class="stack">
@@ -395,6 +482,9 @@ export function InventoryView() {
                         <Toggle label="Auto save" value={s.autoSave} onChange={(v) => setS({ autoSave: v })} />
                         <Toggle label="Save photo" value={s.savePhotos} onChange={(v) => setS({ savePhotos: v })} />
                         <Toggle label="Read text" value={s.textFallback} onChange={(v) => setS({ textFallback: v })} />
+                        {s.marker && (
+                            <Toggle label="Read marker count" value={s.readMarker} onChange={(v) => setS({ readMarker: v })} />
+                        )}
                     </div>
                 </div>
                 <CameraPanel active={cameraOn} onToggle={() => setCameraOn((on) => !on)} formats={FORMATS_PARTS}
@@ -410,9 +500,9 @@ export function InventoryView() {
                         {cameraOn ? "Stop camera" : "Start camera"}
                     </button>
                     <button class="btn" disabled={!cameraOn || !!draft} onClick={scanNow}>Scan now</button>
-                    <button class="btn" disabled={!cameraOn || !!draft} title="Keep a photo of a bag whose code is missing or will not read"
-                        onClick={() => rig.current && !busy.current && void takePhoto(rig.current.camera)}>
-                        Photo, no code
+                    <button class="btn" disabled={!cameraOn || !!draft || !lastItem} onClick={retakeLast}
+                        title="Take the photo of the bag saved last again">
+                        Retake last{lastItem ? ` (${itemTag(lastItem)})` : ""}
                     </button>
                     {s.textFallback && (
                         <button class="btn" disabled={!cameraOn || !!draft}
@@ -431,11 +521,8 @@ export function InventoryView() {
                             }
                         }} />
                     </label>
-                    <button class="btn" disabled={!!draft} onClick={async () => {
-                        const t = await target();
-                        setDraft(blankItem(t.bagId, t.batchId));
-                        setPhoto(null);
-                    }}>
+                    <button class="btn" disabled={!!draft} onClick={() => void addByHand(null)}
+                        title="For a bag with no code that reads: take its photo, fill in what is known">
                         Add by hand
                     </button>
                 </div>
@@ -491,21 +578,38 @@ export function InventoryView() {
             </div>
 
             {draft && (
-                <div class={`panel stack ${draftWaits ? waitingClass(draft) : ""}`}>
+                <div class={`panel stack draft ${draftWaits === "code" ? "unknown" : draftWaits === "photo" ? "nocode" : ""}`}>
                     <h2 style="margin:0">
-                        {draftWaits === "photo" ? "Photo, no code" : draftWaits ? "Unidentified code"
-                            : draft.raw ? "Scanned item" : "New item"}
+                        {!draft.raw ? "Add by hand" : draftWaits ? "Unidentified code" : "Scanned item"}
                     </h2>
                     {draftWaits === "code" && (
-                        <p class="hint">No part number in this code. Saved as it is, it waits among the unidentified
-                            codes; fill in a part number or a name to file it normally.</p>
+                        <p class="hint">No part number in this code. Saved as it is, it goes into {whereText(draft)}
+                            flagged unidentified; a part number or a name identifies it.</p>
                     )}
                     {draftWaits === "photo" && (
-                        <p class="hint">No code on this bag. Saved as it is, the photo waits among the unidentified
-                            photos; fill in a part number or a name to file it normally.</p>
+                        <p class="hint">Without a part number or a name it goes into {whereText(draft)} flagged
+                            unidentified, with its photo to tell what it is later.</p>
                     )}
                     <ItemForm item={draft} onChange={setDraft} />
                     {photo && <BlobImage blob={photo} />}
+                    <div class="row">
+                        <button class="btn" disabled={!cameraOn}
+                            onClick={async () => void draftPhoto(await rig.current?.camera.snapshot(0.92) ?? null)}>
+                            {photo ? "Retake photo" : "Take photo"}
+                        </button>
+                        <label class="btn">
+                            Choose photo
+                            <input type="file" accept="image/*" hidden onChange={(e) => {
+                                const input = e.currentTarget as HTMLInputElement;
+                                const f = input.files?.[0];
+                                input.value = "";
+                                if (f) {
+                                    void draftPhoto(f);
+                                }
+                            }} />
+                        </label>
+                        {photo && <button class="btn" onClick={() => setPhoto(null)}>Remove photo</button>}
+                    </div>
                     <div class="row">
                         <button class="btn primary" onClick={saveDraft}>Save</button>
                         <button class="btn" onClick={() => { setDraft(null); setPhoto(null); }}>Discard</button>
@@ -528,11 +632,9 @@ export function InventoryView() {
                             <li key={item.id} class={waitingClass(item)}>
                                 <Thumb item={item} />
                                 <div class="grow">
-                                    <div class="title"><Tag item={item} /> {itemName(item)}</div>
+                                    <ItemTitle item={item} />
                                     <div class="small muted">
-                                        {[isUnidentified(item) ? "Unidentified" : item.type, item.vendorPn,
-                                            display(store.bag(item.bagId)) || (item.batchId ? title(item.batchId) : "")]
-                                            .filter(Boolean).join(" / ")}
+                                        {[item.type, item.vendorPn, whereText(item)].filter(Boolean).join(" / ")}
                                     </div>
                                 </div>
                                 <QtyBadge item={item} />

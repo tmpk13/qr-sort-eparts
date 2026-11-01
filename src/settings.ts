@@ -1,5 +1,7 @@
 // User settings, kept in localStorage.
 import { useEffect, useState } from "preact/hooks";
+import type { MarkerTune } from "./marker.ts";
+import type { ItemOrder } from "./model.ts";
 
 export interface Settings {
     autoScan: boolean; // capture by itself when a new bag enters the frame
@@ -19,12 +21,17 @@ export interface Settings {
     batchMode: boolean; // scans go into the current batch instead of a bag
     currentBatchId: string | null;
     typeHints: Record<string, string>; // part number family -> type chosen by the user
+    sortItems: ItemOrder; // items in bags and boxes as scanned, or by type
+    marker: MarkerTune | null; // the color of the marker counts are written on bags with
+    readMarker: boolean; // read the count written in that color off each bag's photo
+    markerConfidence: number; // 0-100: counts read below this are not used
 }
 
 export const DEFAULTS: Settings = {
     autoScan: true, autoSave: true, savePhotos: true, bridgeUrl: "", labelW: 40, labelH: 30, density: 4,
     cameraId: "", zoom: 1, stills: true, textFallback: false, ocrConfidence: 70, led: true, currentBagId: null,
-    batchMode: false, currentBatchId: null, typeHints: {},
+    batchMode: false, currentBatchId: null, typeHints: {}, sortItems: "scanned", marker: null, readMarker: false,
+    markerConfidence: 70,
 };
 
 const KEY = "qr-sort.settings";

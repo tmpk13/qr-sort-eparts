@@ -24,16 +24,20 @@ describe("CSV export", () => {
                     raw: "[)>\x1e06\x1d1PGRM1", created: Date.UTC(2026, 9, 23) }),
                 normalizeItem({ id: "b", seq: 2, bagId: "bag-2", mpn: "SN74", qty: 10, notes: "a, b", source: "digikey" }),
                 normalizeItem({ id: "c", seq: 3, batchId: "batch-1", vendorPn: "C1", source: "lcsc" }),
+                normalizeItem({ id: "d", seq: 4, bagId: "bag-2", type: "resistor", mpn: "RC0805FR-0710KL", source: "digikey" }),
+                normalizeItem({ id: "e", seq: 5, source: "unknown", raw: "hello" }),
             ],
             batches: [{ id: "batch-1", code: "K7Q2", name: "", created: 0 }],
         };
         const lines = toCsv(data).split("\r\n");
         expect(lines[0]).toBe(CSV_COLUMNS.join(","));
-        expect(lines).toHaveLength(5);
-        expect(lines[4]).toBe("");
-        expect(lines[1]).toStartWith("I-2,,,SN74,,10,10,,,,digikey,Bag 2,Box 2: Front,Shelf 1: Wall,1,,\"a, b\",,");
-        expect(lines[2]).toStartWith("I-1,,,GRM1,,100,60,,,,mouser,Bag 1: Caps,Box 1,Shelf 1: Wall,2,,,[)> 06 1PGRM1,");
-        expect(lines[2]).toEndWith(",2026-10-23T00:00:00.000Z");
-        expect(lines[3]).toContain("Batch 1 K7Q2");
+        expect(lines).toHaveLength(7);
+        expect(lines[6]).toBe("");
+        expect(lines[1]).toStartWith("I-2,,,,SN74,,10,10,,,,digikey,,Bag 2,Box 2: Front,Shelf 1: Wall,1,,\"a, b\",,");
+        expect(lines[2]).toStartWith("I-4,resistor,10k,,RC0805FR-0710KL,,,,,,,digikey,,Bag 2,Box 2: Front,");
+        expect(lines[3]).toStartWith("I-1,,,,GRM1,,100,60,,,,mouser,,Bag 1: Caps,Box 1,Shelf 1: Wall,2,,,[)> 06 1PGRM1,");
+        expect(lines[3]).toEndWith(",2026-10-23T00:00:00.000Z");
+        expect(lines[4]).toContain("Batch 1 K7Q2");
+        expect(lines[5]).toStartWith("I-5,,,,,,,,,,,unknown,unidentified,,,,,,,hello,");
     });
 });

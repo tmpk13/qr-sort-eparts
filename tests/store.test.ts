@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { openDB } from "idb";
 import { Db, type Backup } from "../src/db.ts";
-import type { Item } from "../src/model.ts";
+import { UNIDENTIFIED, type Item } from "../src/model.ts";
 import { blankItem, Store } from "../src/store.ts";
 
 async function fresh(): Promise<Store> {
@@ -114,11 +114,8 @@ describe("store", () => {
     });
 });
 
-function part(bagId: string | null, fields: Partial<Item>): Item {
-    return { ...blankItem(bagId), source: "digikey", ...fields, count: fields.count ?? fields.qty ?? null };
-}
 
-describe("one record per part in a box", () => {
+describe("one record per bag", () => {
     test("items are numbered as they are stored", async () => {
         const s = await fresh();
         await s.saveItem(part(null, { mpn: "A" }));
@@ -126,108 +123,92 @@ describe("one record per part in a box", () => {
         expect(s.data.items.map((i) => i.seq).sort()).toEqual([1, 2]);
     });
 
-    test("a second bag of a part adds to the record in that box, in whichever bag it is", async () => {
+    test("a second bag of a part is a record of its own; the same label again in the box is not", async () => {
         const s = await fresh();
         const box = await s.createBox();
         const bag1 = await s.createBag("", box.id);
         const bag2 = await s.createBag("", box.id);
         const first = await s.saveItem(part(bag1.id, { mpn: "NE5532ADR", qty: 5, raw: "A" }));
-        expect(first.into).toBeNull();
-        const second = await s.saveItem(part(bag2.id, { mpn: "ne5532adr", qty: 10, raw: "B", country: "MX" }),
-            new Blob(["p"]));
-        expect(second.into?.id).toBe(first.item.id);
+        const second = await s.saveItem(part(bag2.id, { mpn: "ne5532adr", qty: 10, raw: "B" }), new Blob(["p"]));
         expect(second.rescan).toBe(false);
-        expect(s.data.items).toHaveLength(1);
-        expect(s.data.items[0]).toMatchObject({ bagId: bag1.id, qty: 15, count: 15, country: "MX", merged: ["B"], seq: 1,
-            hasPhoto: true });
-        expect((await s.db.getPhoto(first.item.id))?.size).toBe(1);
+        expect(s.data.items).toHaveLength(2);
+        expect(s.item(first.item.id)).toMatchObject({ qty: 5, count: 5, bagId: bag1.id, hasPhoto: false });
+        expect(s.item(second.item.id)).toMatchObject({ qty: 10, count: 10, bagId: bag2.id, hasPhoto: true, seq: 2 });
 
-        const again = await s.saveItem(part(bag2.id, { mpn: "NE5532ADR", qty: 10, raw: "B" }));
+        const again = await s.saveItem(part(bag1.id, { mpn: "NE5532ADR", qty: 10, raw: "B" }));
         expect(again.rescan).toBe(true);
-        expect(s.data.items[0].qty).toBe(15);
+        expect(again.item.id).toBe(second.item.id);
+        expect(s.data.items).toHaveLength(2);
 
         // Another box is another place.
         const box2 = await s.createBox();
         const bag3 = await s.createBag("", box2.id);
-        expect((await s.saveItem(part(bag3.id, { mpn: "NE5532ADR", qty: 1 }))).into).toBeNull();
-        expect(s.data.items).toHaveLength(2);
+        expect((await s.saveItem(part(bag3.id, { mpn: "NE5532ADR", qty: 10, raw: "B" }))).rescan).toBe(false);
+        expect(s.data.items).toHaveLength(3);
     });
 
-    test("unidentified scans keep to themselves and are listed once per code", async () => {
+    test("a scan that does not say what it is goes where it was scanned, flagged unidentified", async () => {
         const s = await fresh();
         const bag = await s.createBag();
-        await s.saveItem(part(bag.id, { mpn: "X" }));
-        const u = { ...blankItem(null), source: "unknown", raw: "https://example.com" };
-        await s.saveItem(u);
-        expect((await s.saveItem({ ...u, id: crypto.randomUUID() })).rescan).toBe(true);
-        expect(s.unidentified().map((i) => i.raw)).toEqual(["https://example.com"]);
-        expect(s.itemsIn(null)).toHaveLength(0);
-    });
-
-    test("photos of bags with no code are listed apart from codes, one record per photo", async () => {
-        const s = await fresh();
-        const u = await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" });
-        const p1 = await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]));
-        const p2 = await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]));
-        expect(p2.into).toBeNull();
+        const u = await s.saveItem({ ...blankItem(bag.id), source: "unknown", raw: "https://example.com" });
+        expect(u.item).toMatchObject({ bagId: bag.id, flags: [UNIDENTIFIED] });
+        expect((await s.saveItem({ ...blankItem(bag.id), source: "unknown", raw: "https://example.com" })).rescan)
+            .toBe(true);
+        const p = await s.saveItem(blankItem(bag.id), new Blob(["jpeg"]));
+        expect(p.item).toMatchObject({ bagId: bag.id, flags: [UNIDENTIFIED], hasPhoto: true });
+        // Every photo is a bag of its own.
+        expect((await s.saveItem(blankItem(bag.id), new Blob(["jpeg"]))).rescan).toBe(false);
+        expect(s.itemsIn(bag.id)).toHaveLength(3);
         expect(s.unidentified("code").map((i) => i.id)).toEqual([u.item.id]);
-        expect(s.unidentified("photo").map((i) => i.id).sort()).toEqual([p1.item.id, p2.item.id].sort());
-        expect(s.unidentified()).toHaveLength(3);
-        expect(s.item(p1.item.id)?.hasPhoto).toBe(true);
+        expect(s.unidentified("photo")).toHaveLength(2);
+        expect(s.unidentifiedIn([bag.id])).toHaveLength(3);
+        // A record that says what it is carries no flag.
+        expect((await s.saveItem(part(bag.id, { mpn: "X" }))).item.flags).toEqual([]);
+        expect((await s.saveItem({ ...blankItem(bag.id), name: "M3 screws" })).item.flags).toEqual([]);
     });
 
-    test("putting unidentified records in a bag, or their bag in a box, leaves them waiting", async () => {
+    test("moving unidentified items, or their bag, leaves the flag; a part number or a name clears it", async () => {
         const s = await fresh();
-        const bag = await s.createBag();
+        const bag1 = await s.createBag();
+        const bag2 = await s.createBag();
         const box = await s.createBox();
-        const u = (await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" })).item;
-        const p = (await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]))).item;
-        await s.moveItems([u.id, p.id], bag.id);
-        await s.moveBags([bag.id], box.id);
-        expect(s.item(u.id)).toMatchObject({ bagId: bag.id, source: "unknown" });
-        expect(s.item(p.id)).toMatchObject({ bagId: bag.id, source: "photo" });
-        expect(s.unidentified()).toHaveLength(2);
-        expect(s.unidentifiedIn([bag.id])).toHaveLength(2);
-        expect(s.itemsIn(bag.id)).toHaveLength(0);
-        // Notes, a count or a bag picked in the item dialog do not identify it either.
+        const u = (await s.saveItem({ ...blankItem(bag1.id), source: "unknown", raw: "hello" })).item;
+        const p = (await s.saveItem(blankItem(bag1.id), new Blob(["jpeg"]))).item;
+        await s.moveItems([u.id, p.id], bag2.id);
+        await s.moveBags([bag2.id], box.id);
+        expect(s.item(u.id)).toMatchObject({ bagId: bag2.id, flags: [UNIDENTIFIED] });
+        expect(s.item(p.id)).toMatchObject({ bagId: bag2.id, flags: [UNIDENTIFIED] });
+        // Notes, a count or another bag do not identify it.
         await s.saveItem({ ...s.item(p.id)!, notes: "white bag", count: 10, bagId: null });
-        expect(s.item(p.id)).toMatchObject({ source: "photo", bagId: null, count: 10 });
-        expect(s.unidentified("photo")).toHaveLength(1);
-    });
-
-    test("a part number or a name identifies a waiting record, which then files like any item", async () => {
-        const s = await fresh();
-        const box = await s.createBox();
-        const bag1 = await s.createBag("", box.id);
-        const bag2 = await s.createBag("", box.id);
-        const kept = (await s.saveItem(part(bag1.id, { mpn: "NE5532", qty: 5, raw: "K" }))).item;
-        const p = (await s.saveItem({ ...blankItem(null), source: "photo" }, new Blob(["jpeg"]))).item;
-        const u = (await s.saveItem({ ...blankItem(null), source: "unknown", raw: "hello" })).item;
-        await s.moveItems([p.id, u.id], bag2.id);
-
+        expect(s.item(p.id)).toMatchObject({ flags: [UNIDENTIFIED], bagId: null, count: 10 });
+        // A name does, and the photo stays.
         const named = await s.saveItem({ ...s.item(p.id)!, name: "M3 screws" });
-        expect(named.item).toMatchObject({ id: p.id, source: "manual", bagId: bag2.id, hasPhoto: true });
-        expect(s.itemsIn(bag2.id).map((i) => i.id)).toEqual([p.id]);
+        expect(named.item).toMatchObject({ flags: [], hasPhoto: true });
         expect((await s.db.getPhoto(p.id))?.size).toBe(4);
-
-        // Identified as a part already in the box: merged into that record like a second bag of it.
-        const merged = await s.saveItem({ ...s.item(u.id)!, mpn: "ne5532", qty: 2 });
-        expect(merged.into?.id).toBe(kept.id);
-        expect(s.item(kept.id)).toMatchObject({ qty: 7, merged: ["hello"] });
-        expect(s.item(u.id)).toBeUndefined();
+        // So does a part number, and one already in the box stays a record of its own.
+        await s.saveItem(part(bag2.id, { mpn: "NE5532", qty: 5, raw: "K" }));
+        await s.saveItem({ ...s.item(u.id)!, mpn: "NE5532", qty: 2 });
+        expect(s.item(u.id)).toMatchObject({ flags: [], qty: 2, bagId: bag2.id });
+        expect(s.itemsIn(bag2.id)).toHaveLength(2);
         expect(s.unidentified()).toHaveLength(0);
     });
 
-    test("moving items merges them into the record already in the target box", async () => {
+    test("a photo given with a saved record replaces the one it had", async () => {
+        const s = await fresh();
+        const saved = (await s.saveItem(part(null, { mpn: "X" }), new Blob(["old"]))).item;
+        await s.saveItem(s.item(saved.id)!, new Blob(["newer photo"]));
+        expect((await s.db.getPhoto(saved.id))?.size).toBe(11);
+        expect(s.data.items).toHaveLength(1);
+    });
+
+    test("moving items does not combine them with the same part already there", async () => {
         const s = await fresh();
         const box = await s.createBox();
         const bag1 = await s.createBag("", box.id);
         const loose = await s.saveItem(part(null, { mpn: "X", qty: 3, raw: "L" }));
-        const other = await s.saveItem(part(null, { mpn: "Y", qty: 1, raw: "M" }));
-        const kept = await s.saveItem(part(bag1.id, { mpn: "X", qty: 7, raw: "K" }));
-        const r = await s.moveItems([loose.item.id, other.item.id], bag1.id);
-        expect(r.map((x) => x.into?.id ?? null)).toEqual([kept.item.id, null]);
-        expect(s.data.items.map((i) => `${i.mpn}:${i.qty}:${i.bagId === bag1.id}`).sort()).toEqual(["X:10:true", "Y:1:true"]);
+        await s.saveItem(part(bag1.id, { mpn: "X", qty: 7, raw: "K" }));
+        await s.moveItems([loose.item.id], bag1.id);
+        expect(s.itemsIn(bag1.id).map((i) => `${i.mpn}:${i.qty}`).sort()).toEqual(["X:3", "X:7"]);
     });
 
     test("bags move to boxes and boxes to the end of a shelf", async () => {
@@ -248,7 +229,7 @@ describe("one record per part in a box", () => {
 });
 
 describe("batches", () => {
-    test("a batch collects scans, goes into a bag, and clears without losing items", async () => {
+    test("a batch collects scans, goes into a bag with its unidentified ones, and clears without losing items", async () => {
         const s = await fresh();
         const batch = await s.createBatch();
         expect(batch.id).toBe("batch-1");
@@ -259,24 +240,25 @@ describe("batches", () => {
         await s.saveItem(part(bag.id, { mpn: "X", qty: 1, raw: "old" }));
         await s.saveItem(part(null, { mpn: "X", qty: 2, raw: "b1", batchId: batch.id }));
         await s.saveItem(part(null, { mpn: "Z", qty: 4, raw: "b2", batchId: batch.id }));
-        // Within the batch, a part is one record too.
         await s.saveItem(part(null, { mpn: "Z", qty: 4, raw: "b3", batchId: batch.id }));
-        expect(s.itemsInBatch(batch.id).map((i) => `${i.mpn}:${i.qty}`)).toEqual(["X:2", "Z:8"]);
+        await s.saveItem(blankItem(null, batch.id), new Blob(["jpeg"]));
+        expect(s.itemsInBatch(batch.id).map((i) => `${i.mpn}:${i.qty}`)).toEqual(["X:2", "Z:4", "Z:4", ":null"]);
         expect(s.itemsIn(null)).toHaveLength(0);
 
         const r = await s.putBatchInBag(batch.id, bag.id);
-        expect(r.filter((x) => x.into).length).toBe(1);
-        expect(s.itemsIn(bag.id).map((i) => `${i.mpn}:${i.qty}`)).toEqual(["X:3", "Z:8"]);
+        expect(r).toHaveLength(4);
+        expect(s.itemsIn(bag.id).map((i) => `${i.mpn}:${i.qty}`)).toEqual(["X:1", "X:2", "Z:4", "Z:4", ":null"]);
+        expect(s.unidentifiedIn([bag.id])).toHaveLength(1);
 
         await s.clearBatch(batch.id);
         expect(s.batch(batch.id)).toBeUndefined();
-        expect(s.data.items).toHaveLength(2);
+        expect(s.data.items).toHaveLength(5);
         expect(s.data.items.every((i) => i.batchId === null)).toBe(true);
     });
 });
 
 describe("older data", () => {
-    test("a version 1 database gets item numbers and counts when opened", async () => {
+    test("a version 1 database gets item numbers, counts and flags when opened", async () => {
         const name = `v1-${crypto.randomUUID()}`;
         const old = await openDB(name, 1, {
             upgrade(db) {
@@ -289,32 +271,32 @@ describe("older data", () => {
             },
         });
         await old.put("items", { id: "late", bagId: null, mpn: "B", qty: 4, created: 20, source: "digikey" });
-        await old.put("items", { id: "early", bagId: null, mpn: "A", qty: 5, created: 10, source: "digikey" });
+        await old.put("items", { id: "early", bagId: null, mpn: "RC0805FR-0710KL", qty: 5, created: 10, source: "digikey" });
+        await old.put("items", { id: "odd", bagId: null, raw: "hello", created: 30, source: "unknown" });
         old.close();
         const s = new Store();
         await s.init(await Db.open(name));
-        expect(s.item("early")).toMatchObject({ seq: 1, count: 5, merged: [], batchId: null });
+        expect(s.item("early")).toMatchObject({ seq: 1, count: 5, merged: [], batchId: null, flags: [], value: "10k" });
         expect(s.item("late")).toMatchObject({ seq: 2, count: 4 });
+        expect(s.item("odd")).toMatchObject({ seq: 3, flags: [UNIDENTIFIED] });
         await s.saveItem(part(null, { mpn: "C" }));
-        expect(s.data.items.find((i) => i.mpn === "C")?.seq).toBe(3);
+        expect(s.data.items.find((i) => i.mpn === "C")?.seq).toBe(4);
     });
 
     // A real export kept out of the repository; the test runs where the file is present.
     const sample = "test-data/qr-sort-2026-10-23.json";
-    test.skipIf(!existsSync(sample))("a real version 1 backup restores, numbers its items and merges its duplicates", async () => {
+    test.skipIf(!existsSync(sample))("a real version 1 backup restores with every bag its own numbered record", async () => {
         const backup = (await Bun.file(sample).json()) as Backup;
         const s = await fresh();
         await s.importBackup(backup);
         expect(s.data.items).toHaveLength(56);
         expect(new Set(s.data.items.map((i) => i.seq)).size).toBe(56);
-        const merged = await s.mergeDuplicates();
-        expect(merged).toBe(56 - 41);
-        expect(s.data.items).toHaveLength(41);
-        const qty = (mpn: string) => s.data.items.find((i) => i.mpn === mpn)?.qty;
-        expect(qty("STSPIN250")).toBe(17); // three bags: 5 + 2 + 10
-        expect(qty("MIC842LYC5-TR")).toBe(10); // the same label scanned twice
-        // Merging keeps the oldest record.
-        const oldest = Math.min(...backup.items.filter((i) => i.mpn === "NE5532ADR").map((i) => i.created));
-        expect(s.data.items.find((i) => i.mpn === "NE5532ADR")?.created).toBe(oldest);
+        expect(s.unidentified()).toHaveLength(0);
+        const qty = (mpn: string) => s.data.items.filter((i) => i.mpn === mpn).map((i) => i.qty).sort((a, b) => a! - b!);
+        expect(qty("STSPIN250")).toEqual([2, 5, 10]); // three bags, not one record of 17
     });
 });
+
+function part(bagId: string | null, fields: Partial<Item>): Item {
+    return { ...blankItem(bagId), source: "digikey", ...fields, count: fields.count ?? fields.qty ?? null };
+}

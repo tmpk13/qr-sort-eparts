@@ -2,13 +2,15 @@
 // mode to select many things at once and move them; batches, unidentified codes and photos.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { toCsv } from "../csv.ts";
-import { batchTitle, display, isUnidentified, itemName, itemTag, printable, title, unidentifiedKind, type Bag,
-    type Batch, type Box, type Data, type Item, type Kind, type Shelf } from "../model.ts";
+import { readMarkerCount } from "../marker.ts";
+import { batchTitle, display, isUnidentified, itemName, itemTag, printable, sortItems, title, unidentifiedKind,
+    type Bag, type Batch, type Box, type Data, type Item, type ItemOrder, type Kind, type Shelf } from "../model.ts";
 import { takeFocus } from "../nav.ts";
 import { editRows, selectRows, type Row, type RowKind } from "../selection.ts";
 import { downloadBlob } from "../printer.ts";
+import { settings, useSettings } from "../settings.ts";
 import { store, useData } from "../store.ts";
-import { Field, ItemForm, LabelDialog, Modal, QtyBadge, Tag, Thumb, toast, usePhotoUrl, val, waitingClass }
+import { Field, ItemForm, ItemTitle, LabelDialog, Modal, QtyBadge, Thumb, toast, usePhotoUrl, val, waitingClass }
     from "../ui.tsx";
 import { ItemList } from "./find.tsx";
 
@@ -17,6 +19,7 @@ interface Actions {
     label: (id: string, name: string) => void;
     item: (id: string) => void;
     focus: string | null; // an item to show: its shelf, box and bag start open
+    order: ItemOrder; // how item lists are sorted
 }
 
 export function exportCsv(data: Data): void {
@@ -26,6 +29,7 @@ export function exportCsv(data: Data): void {
 
 export function BrowseView() {
     const data = useData();
+    const [s, setS] = useSettings();
     const [arrival] = useState(() => takeFocus());
     const [edit, setEdit] = useState<{ kind: Kind; id: string } | null>(null);
     const [label, setLabel] = useState<{ id: string; name: string } | null>(null);
@@ -36,10 +40,11 @@ export function BrowseView() {
         label: (id, name) => setLabel({ id, name }),
         item: (id) => setItemId(id),
         focus: arrival?.itemId ?? null,
+        order: s.sortItems,
     };
     const looseBoxes = store.boxesOn(null);
     const looseBags = store.bagsIn(null);
-    const looseItems = store.itemsIn(null);
+    const looseItems = sortItems(store.itemsIn(null), s.sortItems);
     const codes = store.unidentified("code");
     const photos = store.unidentified("photo");
     const focused = store.item(actions.focus);
@@ -59,8 +64,13 @@ export function BrowseView() {
                     {editMode ? "Done editing" : "Edit mode"}
                 </button>
                 <button class="btn" onClick={() => exportCsv(data)}>Export CSV</button>
+                <select style="width:auto" value={s.sortItems} aria-label="Sort items"
+                    onChange={(e) => setS({ sortItems: val(e) as ItemOrder })}>
+                    <option value="scanned">Sort: as scanned</option>
+                    <option value="type">Sort: by type, then value</option>
+                </select>
             </div>
-            {editMode ? <EditMode data={data} onOpen={actions.item} /> : (
+            {editMode ? <EditMode data={data} order={s.sortItems} onOpen={actions.item} /> : (
                 <div class="panel tree">
                     {data.shelves.map((shelf) => <ShelfNode key={shelf.id} shelf={shelf} a={actions} />)}
                     {!data.shelves.length && <p class="muted">No shelves yet. Make a shelf, put boxes on it, bags in the boxes.</p>}
@@ -84,16 +94,16 @@ export function BrowseView() {
                     {codes.length > 0 && (
                         <details open class="unknown">
                             <summary>Unidentified codes <span class="muted">{codes.length}</span></summary>
-                            <p class="hint">Codes with no part number in them. Open one to give it a part number or a
-                                name, or delete it; putting it in a bag keeps it here until then.</p>
+                            <p class="hint">Codes with no part number in them, filed where they were scanned. A part
+                                number or a name identifies one; moving it does not.</p>
                             <Items items={codes} a={actions} showPlace />
                         </details>
                     )}
                     {photos.length > 0 && (
                         <details open class="nocode">
                             <summary>Unidentified photos <span class="muted">{photos.length}</span></summary>
-                            <p class="hint">Bags with no code that would read, kept as a photo. Open one to give it a
-                                part number or a name, or delete it; putting it in a bag keeps it here until then.</p>
+                            <p class="hint">Bags with no code that would read, added with a photo and filed where they
+                                were added. A part number or a name identifies one; moving it does not.</p>
                             <Items items={photos} a={actions} showPlace />
                         </details>
                     )}
@@ -131,9 +141,10 @@ function ShelfNode(p: { shelf: Shelf; a: Actions }) {
     );
 }
 
-/** ", 2 to identify" for records waiting to be identified, else "". */
-function waitingNote(n: number): string {
-    return n ? `, ${n} to identify` : "";
+/** ", 2 unidentified" for the unidentified ones among these items, else "". */
+function unidentifiedNote(items: Item[]): string {
+    const n = items.filter(isUnidentified).length;
+    return n ? `, ${n} unidentified` : "";
 }
 
 function BoxNode(p: { box: Box; a: Actions }) {
@@ -145,8 +156,7 @@ function BoxNode(p: { box: Box; a: Actions }) {
             <summary>
                 {p.box.position != null && <span class="badge">#{p.box.position}</span>} {display(p.box)}{" "}
                 <span class="muted">
-                    {bags.length} bags, {items.length} parts, {pieces} pieces
-                    {waitingNote(store.unidentifiedIn(bags.map((b) => b.id)).length)}
+                    {bags.length} bags, {items.length} parts, {pieces} pieces{unidentifiedNote(items)}
                 </span>
             </summary>
             <div class="row actions">
@@ -157,22 +167,31 @@ function BoxNode(p: { box: Box; a: Actions }) {
                     && store.deleteBox(p.box.id)}>Delete</button>
             </div>
             {bags.map((bag) => <BagNode key={bag.id} bag={bag} a={p.a} />)}
+            {items.length > 0 && <BoxParts boxId={p.box.id} items={items} a={p.a} />}
+        </details>
+    );
+}
+
+/** Every part in a box as one list, with its bag; drawn only while open, so photos load on demand. */
+function BoxParts(p: { boxId: string; items: Item[]; a: Actions }) {
+    const [open, setOpen] = useState(false);
+    return (
+        <details class="box-parts" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+            <summary>All parts in {title(p.boxId)} <span class="muted">{p.items.length}</span></summary>
+            {open && <Items items={sortItems(p.items, p.a.order)} a={p.a} showPlace />}
         </details>
     );
 }
 
 function BagNode(p: { bag: Bag; a: Actions }) {
-    const n = store.itemsIn(p.bag.id).length;
-    const waiting = store.unidentifiedIn([p.bag.id]).length;
-    // Deleting the bag deletes everything in it, the records waiting to be identified included.
-    const contents = `${n} items${waiting ? ` and ${waiting} waiting to be identified` : ""}`;
+    const items = store.itemsIn(p.bag.id);
     return (
         <details open={holds(p.a, { bagId: p.bag.id })}>
-            <summary>{display(p.bag)} <span class="muted">{n} items{waitingNote(waiting)}</span></summary>
+            <summary>{display(p.bag)} <span class="muted">{items.length} items{unidentifiedNote(items)}</span></summary>
             <div class="row actions">
                 <button class="btn small" onClick={() => p.a.edit("bag", p.bag.id)}>Edit</button>
                 <button class="btn small" onClick={() => p.a.label(p.bag.id, p.bag.name)}>Label</button>
-                <button class="btn small danger" onClick={() => confirm(`Delete ${display(p.bag)} and its ${contents}?`)
+                <button class="btn small danger" onClick={() => confirm(`Delete ${display(p.bag)} and its ${items.length} items?`)
                     && store.deleteBag(p.bag.id)}>Delete</button>
             </div>
             <ItemList bagId={p.bag.id} onPick={p.a.item} focus={p.a.focus} />
@@ -201,7 +220,7 @@ function BatchNode(p: { batch: Batch; a: Actions }) {
                 <button class="btn small danger" onClick={() => confirm(`Clear ${batchTitle(p.batch)}? Its items stay.`)
                     && store.clearBatch(p.batch.id)}>Clear batch</button>
             </div>
-            <Items items={items} a={p.a} showPlace />
+            <Items items={sortItems(items, p.a.order)} a={p.a} showPlace />
         </details>
     );
 }
@@ -214,8 +233,12 @@ function Items(p: { items: Item[]; a: Actions; showPlace?: boolean }) {
                     onClick={() => p.a.item(item.id)}>
                     <Thumb item={item} />
                     <div class="grow">
-                        <div class="title"><Tag item={item} /> {itemName(item)}</div>
-                        {p.showPlace && <div class="small muted">{display(store.bag(item.bagId)) || "not in a bag"}</div>}
+                        <ItemTitle item={item} />
+                        {p.showPlace && (
+                            <div class="small muted">
+                                {display(store.bag(item.bagId)) || (item.batchId ? title(item.batchId) : "not in a bag")}
+                            </div>
+                        )}
                     </div>
                     <QtyBadge item={item} />
                 </li>
@@ -234,8 +257,8 @@ function LooseItems(p: { items: Item[]; a: Actions; open: boolean }) {
 }
 
 // ---- edit mode ----
-function EditMode(p: { data: Data; onOpen: (id: string) => void }) {
-    const rows = editRows(p.data);
+function EditMode(p: { data: Data; order: ItemOrder; onOpen: (id: string) => void }) {
+    const rows = editRows(p.data, p.order);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const anchor = useRef<string | null>(null);
     const [bagTo, setBagTo] = useState("");
@@ -261,9 +284,8 @@ function EditMode(p: { data: Data; onOpen: (id: string) => void }) {
         toast(text, "ok");
     };
     const moveItems = async () => {
-        const r = await store.moveItems(items, bagTo || null);
-        const merged = r.filter((x) => x.into).length;
-        done(`Moved ${items.length} items to ${display(store.bag(bagTo)) || "no bag"}${merged ? `, ${merged} merged` : ""}`);
+        await store.moveItems(items, bagTo || null);
+        done(`Moved ${items.length} items to ${display(store.bag(bagTo)) || "no bag"}`);
     };
     const moveBags = async () => {
         await store.moveBags(bags, boxTo || null);
@@ -277,8 +299,8 @@ function EditMode(p: { data: Data; onOpen: (id: string) => void }) {
     return (
         <div class="stack">
             <p class="hint">Click to select, shift-click to select a run of the same kind. Items move to a bag,
-                bags (with their items) to a box, boxes to the end of a shelf. Unidentified codes and photos stay
-                unidentified wherever they go, until they get a part number or a name.</p>
+                bags (with their items) to a box, boxes to the end of a shelf. Unidentified items stay flagged
+                wherever they go, until they get a part number or a name.</p>
             <ul class="panel list edit-list">
                 {rows.map((row) => row.kind === "head" ? (
                     <li key={`h-${row.id}`} class="head">{row.label}</li>
@@ -408,18 +430,40 @@ function slotsFor(shelfId: string, boxId: string): number {
 
 function ItemDialog(p: { id: string; onClose: () => void }) {
     const data = useData();
+    const [s] = useSettings();
     const stored = store.item(p.id);
     const [item, setItem] = useState<Item | null>(stored ?? null);
+    const [reading, setReading] = useState(false);
     const photo = usePhotoUrl(p.id, !!stored?.hasPhoto);
     if (!item) {
         return null;
     }
     const save = async () => {
-        // A part number or a name identifies a waiting record; the store files it as an ordinary item then.
+        // A part number or a name identifies an unidentified record; the store clears its flag then.
         const r = await store.saveItem(item);
-        toast(r.into ? `Merged into ${itemTag(r.item)} ${itemName(r.item)}, now x${r.item.count ?? "?"}`
-            : `Saved ${itemTag(r.item)} ${itemName(r.item)}`, "ok");
+        toast(`Saved ${itemTag(r.item)} ${itemName(r.item)}`, "ok");
         p.onClose();
+    };
+    const readCount = async () => {
+        const blob = await store.db.getPhoto(item.id);
+        const marker = settings.value.marker;
+        if (!blob || !marker) {
+            return;
+        }
+        setReading(true);
+        try {
+            const read = await readMarkerCount(blob, marker);
+            if (read) {
+                setItem((i) => i && { ...i, count: read.count });
+                toast(`Read ${read.count} at ${Math.round(read.confidence)}% confidence: check it, then save`);
+            } else {
+                toast("No number in the marker's color in this photo");
+            }
+        } catch (err) {
+            toast(`Reading the marker failed: ${(err as Error).message}`, "err");
+        } finally {
+            setReading(false);
+        }
     };
     const remove = async () => {
         if (confirm(`Delete ${itemName(item)}?`)) {
@@ -432,18 +476,23 @@ function ItemDialog(p: { id: string; onClose: () => void }) {
         <Modal title={`${itemTag(item)} ${itemName(item)}`} onClose={p.onClose}>
             {isUnidentified(item) && (
                 <p class={`hint ${waitingClass(item)}`}>
-                    {unidentifiedKind(item) === "photo" ? "Photo of a bag with no code" : "Unidentified code"}: fill in
-                    a part number or a name to file it. Until then it stays among the unidentified, in a bag or not.
+                    {unidentifiedKind(item) === "photo" ? "Photo of a bag with no code" : "Unidentified code"}: a part
+                    number or a name identifies it. Until then it stays flagged, wherever it is moved.
                 </p>
             )}
             <ItemForm item={item} onChange={setItem} bags={data.bags} />
             {photo && <img class="photo" src={photo} alt="" />}
             {batch && <p class="hint">Scanned in {batchTitle(batch)}</p>}
-            {item.merged.length > 0 && <p class="hint">{item.merged.length + 1} bags merged into this record.</p>}
+            {item.merged.length > 0 && <p class="hint">{item.merged.length + 1} bags were summed into this record.</p>}
             {item.raw && <p class="hint mono" style="word-break:break-all">{item.source}: {printable(item.raw)}</p>}
             <div class="row">
                 <button class="btn primary" onClick={save}>Save</button>
                 <button class="btn" onClick={p.onClose}>Cancel</button>
+                {s.marker && stored?.hasPhoto && (
+                    <button class="btn" disabled={reading} onClick={readCount}>
+                        {reading ? "Reading..." : "Read count from photo"}
+                    </button>
+                )}
                 <button class="btn danger" onClick={remove}>Delete</button>
             </div>
         </Modal>

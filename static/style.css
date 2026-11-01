@@ -484,8 +484,75 @@ input:focus, select:focus, textarea:focus {
     color: var(--violet);
 }
 
-/* Records waiting to be identified carry their color wherever they show up: magenta for codes with
-   no part number, violet for photos of bags with no code. */
+/* A component value next to the name, so "10k" stands out from the part number. */
+.value {
+    display: inline-block;
+    padding: 0 0.35em;
+    border-radius: 0.3em;
+    background: var(--bg);
+    color: var(--fg-strong);
+    font-weight: 700;
+}
+
+/* The unidentified flag spelled out, in its record's color. */
+.flag {
+    display: inline-block;
+    padding: 0 0.45em;
+    border: 0.08rem solid currentColor;
+    border-radius: 1em;
+    font-size: 0.75em;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+.flag-code {
+    color: var(--magenta);
+}
+
+.flag-photo {
+    color: var(--violet);
+}
+
+/* A box's parts in one list, below its bags. */
+.tree details.box-parts > summary {
+    font-weight: 400;
+    font-style: italic;
+}
+
+/* Picking the marker color: the picture and the isolated color side by side, stacked when narrow. */
+.marker-views {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.75rem;
+}
+
+.marker-views figure {
+    margin: 0;
+}
+
+.marker-views canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 0.0625rem solid var(--line);
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.marker-pick {
+    cursor: crosshair;
+}
+
+.swatch {
+    display: inline-block;
+    width: 1.5em;
+    height: 1.5em;
+    border: 0.0625rem solid var(--muted);
+    border-radius: 0.3em;
+}
+
+/* Unidentified items carry their color wherever they show up: magenta for a code with no part
+   number, violet for a bag with no code (a photo). */
 .unknown,
 .nocode {
     border-left: 0.3rem solid var(--magenta);

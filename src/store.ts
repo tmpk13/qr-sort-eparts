@@ -2,17 +2,16 @@
 // notifies the subscribed components.
 import { useEffect, useState } from "preact/hooks";
 import { Db, type Backup } from "./db.ts";
-import { emptyData, findTwin, hasIdentity, isRescan, isUnidentified, mergeInto, normalizeItem, randomCode,
+import { emptyData, findRescan, hasIdentity, isUnidentified, normalizeItem, randomCode, UNIDENTIFIED,
     unidentifiedKind, type Bag, type Batch, type Box, type Data, type Item, type Shelf, type Unidentified }
     from "./model.ts";
 
 type Listener = (d: Data) => void;
 
-/** What became of a saved record: stored as it is, or merged into an earlier record of the same part. */
+/** What became of a saved record. */
 export interface SaveResult {
-    item: Item; // the record that now holds the part
-    into: Item | null; // the earlier record it was merged into, if any
-    rescan: boolean; // the same label had been counted already; nothing was added
+    item: Item; // the record as stored, or for a rescan the earlier record of that label
+    rescan: boolean; // the same label had been scanned into this place already; nothing was saved
 }
 
 export class Store {
@@ -70,10 +69,10 @@ export class Store {
         return this.data.batches.find((b) => b.id === id);
     }
 
-    /** Identified items in a bag; with null, the ones in no bag and no batch. */
+    /** Items in a bag, unidentified ones included; with null, the ones in no bag and no batch. */
     itemsIn(bagId: string | null): Item[] {
         return this.data.items
-            .filter((i) => i.bagId === bagId && !isUnidentified(i) && (bagId !== null || !i.batchId))
+            .filter((i) => i.bagId === bagId && (bagId !== null || !i.batchId))
             .sort((a, b) => a.created - b.created || a.seq - b.seq);
     }
 
@@ -81,13 +80,13 @@ export class Store {
         return this.data.items.filter((i) => i.batchId === batchId).sort((a, b) => a.created - b.created || a.seq - b.seq);
     }
 
-    /** Records waiting to be identified, newest first: all of them, or those of one kind. */
+    /** Unidentified records, newest first: all of them, or those of one kind. */
     unidentified(kind?: Unidentified): Item[] {
         return this.data.items.filter((i) => (kind ? unidentifiedKind(i) === kind : isUnidentified(i)))
             .sort((a, b) => b.created - a.created);
     }
 
-    /** Records waiting to be identified that have been put in one of these bags. */
+    /** Unidentified records in one of these bags. */
     unidentifiedIn(bagIds: string[]): Item[] {
         return this.data.items.filter((i) => i.bagId !== null && bagIds.includes(i.bagId) && isUnidentified(i));
     }
@@ -187,8 +186,8 @@ export class Store {
     }
 
     /**
-     * Stores the item, or merges it into the record of the same part number already in that box
-     * (bag, batch), so each box holds one record per part with the quantities summed.
+     * Stores the item; a photo given replaces the stored one. A new record whose label was already
+     * scanned into the same box (bag, batch) is not stored again.
      */
     saveItem(item: Item, photo?: Blob | null): Promise<SaveResult> {
         return this.run(async () => {
@@ -200,39 +199,28 @@ export class Store {
 
     private async put(item: Item, photo?: Blob | null): Promise<SaveResult> {
         const next = normalizeItem(item);
-        if (isUnidentified(next) && hasIdentity(next)) {
-            // Identified by hand: from here on it files like any other item, merging where its part already is.
-            next.source = "manual";
-        }
-        const now = Date.now();
-        const twin = findTwin(next, this.data);
-        if (!twin) {
+        if (!this.item(next.id)) {
+            const earlier = findRescan(next, this.data);
+            if (earlier) {
+                return { item: earlier, rescan: true };
+            }
             if (!next.seq) {
                 next.seq = await this.db.nextNumber("item");
             }
-            const stored = { ...next, hasPhoto: next.hasPhoto || !!photo, updated: now };
-            await this.db.putItem(stored, photo);
-            return { item: stored, into: null, rescan: false };
+            if (!hasIdentity(next) && !isUnidentified(next)) {
+                // Nothing says what it is: it is filed where it was scanned, flagged until someone identifies it.
+                next.flags = [...next.flags, UNIDENTIFIED];
+            }
         }
-        const rescan = isRescan(twin, next);
-        const merged = mergeInto(twin, next);
-        // The earlier record keeps its photo; one without gets the newcomer's.
-        let shot: Blob | null | undefined;
-        if (!twin.hasPhoto) {
-            shot = photo ?? (next.hasPhoto && this.item(next.id) ? await this.db.getPhoto(next.id) : undefined);
+        if (isUnidentified(next) && hasIdentity(next)) {
+            next.flags = next.flags.filter((f) => f !== UNIDENTIFIED);
         }
-        const stored = { ...merged, hasPhoto: twin.hasPhoto || !!shot, updated: rescan ? twin.updated : now };
-        await this.db.putItem(stored, shot);
-        if (this.item(next.id)) {
-            await this.db.deleteItem(next.id);
-        }
-        return { item: stored, into: twin, rescan };
+        const stored = { ...next, hasPhoto: next.hasPhoto || !!photo, updated: Date.now() };
+        await this.db.putItem(stored, photo);
+        return { item: stored, rescan: false };
     }
 
-    /**
-     * Puts items in a bag (null: out of any bag), merging where the part is already there. Records
-     * waiting to be identified go along and keep waiting.
-     */
+    /** Puts items in a bag (null: out of any bag); unidentified ones stay unidentified. */
     moveItems(ids: string[], bagId: string | null): Promise<SaveResult[]> {
         return this.run(async () => {
             const out: SaveResult[] = [];
@@ -240,9 +228,9 @@ export class Store {
                 const item = this.item(id);
                 if (item) {
                     out.push(await this.put({ ...item, bagId }));
-                    await this.refresh();
                 }
             }
+            await this.refresh();
             return out;
         });
     }
@@ -268,23 +256,6 @@ export class Store {
         });
     }
 
-    /** Merges records of the same part that share a box (bag, batch) into the oldest of them. */
-    mergeDuplicates(): Promise<number> {
-        return this.run(async () => {
-            let merged = 0;
-            // Newest first: findTwin answers with the oldest record, so each one folds into that.
-            for (const item of [...this.data.items].sort((a, b) => b.created - a.created)) {
-                const current = this.item(item.id);
-                if (current && findTwin(current, this.data)) {
-                    await this.put(current);
-                    await this.refresh();
-                    merged += 1;
-                }
-            }
-            return merged;
-        });
-    }
-
     createBatch(name = ""): Promise<Batch> {
         return this.run(async () => {
             const b: Batch = { id: await this.db.nextId("batch"), code: randomCode(), name, created: Date.now() };
@@ -303,7 +274,7 @@ export class Store {
 
     /** Puts every item of the batch that is not in a bag yet into the bag; the batch stays as a record. */
     putBatchInBag(batchId: string, bagId: string): Promise<SaveResult[]> {
-        const ids = this.itemsInBatch(batchId).filter((i) => !i.bagId && !isUnidentified(i)).map((i) => i.id);
+        const ids = this.itemsInBatch(batchId).filter((i) => !i.bagId).map((i) => i.id);
         return this.moveItems(ids, bagId);
     }
 
@@ -375,7 +346,7 @@ export function useData(): Data {
 
 export function blankItem(bagId: string | null, batchId: string | null = null): Item {
     const now = Date.now();
-    return { id: crypto.randomUUID(), seq: 0, bagId, batchId, type: "", name: "", mpn: "", vendorPn: "", qty: null,
-        count: null, dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", merged: [],
-        hasPhoto: false, created: now, updated: now };
+    return { id: crypto.randomUUID(), seq: 0, bagId, batchId, type: "", value: "", name: "", mpn: "", vendorPn: "",
+        qty: null, count: null, dateCode: "", lot: "", country: "", notes: "", source: "manual", raw: "", merged: [],
+        flags: [], hasPhoto: false, created: now, updated: now };
 }

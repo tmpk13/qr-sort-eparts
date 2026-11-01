@@ -1,8 +1,8 @@
 // Spreadsheet export: one row per item, its place spelled out, sorted shelf by shelf.
 import { batchTitle, display, itemTag, placeOfBag, printable, type Data } from "./model.ts";
 
-export const CSV_COLUMNS = ["id", "type", "name", "mpn", "vendor_pn", "bag_qty", "count", "date_code", "lot",
-    "country", "source", "bag", "box", "shelf", "position", "batch", "notes", "code", "created"];
+export const CSV_COLUMNS = ["id", "type", "value", "name", "mpn", "vendor_pn", "bag_qty", "count", "date_code", "lot",
+    "country", "source", "flags", "bag", "box", "shelf", "position", "batch", "notes", "code", "created"];
 
 export function csvCell(v: string | number | null | undefined): string {
     let s = v == null ? "" : String(v);
@@ -21,8 +21,9 @@ export function toCsv(data: Data): string {
         const sortKey = [p.shelf ? "0" : "1", display(p.shelf), String(p.box?.position ?? 9999).padStart(4, "0"),
             p.box ? "0" : "1", display(p.box), p.bag ? "0" : "1", display(p.bag), String(item.seq).padStart(8, "0")]
             .join("\t");
-        const cells = [itemTag(item), item.type, item.name, item.mpn, item.vendorPn, item.qty, item.count,
-            item.dateCode, item.lot, item.country, item.source, display(p.bag), display(p.box), display(p.shelf),
+        const cells = [itemTag(item), item.type, item.value, item.name, item.mpn, item.vendorPn, item.qty, item.count,
+            item.dateCode, item.lot, item.country, item.source, item.flags.join(" "), display(p.bag), display(p.box),
+            display(p.shelf),
             p.box?.position ?? null, batch ? batchTitle(batch) : "", item.notes, printable(item.raw),
             item.created ? new Date(item.created).toISOString() : ""];
         return { sortKey, cells };

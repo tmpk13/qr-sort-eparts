@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { display, findTwin, guide, hasIdentity, isRescan, isUnidentified, itemName, itemTag, mergeInto, normalizeItem,
-    parseQrPayload, partKey, placeOfBag, placeText, qrPayload, scopeOf, search, title, unidentifiedKind, type Box,
+import { display, findRescan, guide, hasIdentity, isUnidentified, itemName, itemTag, normalizeItem, parseQrPayload,
+    placeOfBag, placeText, qrPayload, scopeOf, search, sortItems, title, UNIDENTIFIED, unidentifiedKind, type Box,
     type Data, type Item } from "../src/model.ts";
 
 function box(id: string, shelfId: string | null, position: number | null): Box {
@@ -74,81 +74,86 @@ function item(fields: Partial<Item> & { id: string }): Item {
     return normalizeItem({ source: "digikey", created: 10, ...fields });
 }
 
-describe("one record per part in a box", () => {
+describe("records, flags and order", () => {
     const bags = [{ id: "bag-1", name: "", boxId: "box-1", created: 0 }, { id: "bag-2", name: "", boxId: "box-1", created: 0 },
         { id: "bag-3", name: "", boxId: null, created: 0 }];
 
-    test("records from older versions get a count, merged codes and no batch", () => {
+    test("records from older versions get a count, merged codes, no batch, and a value from the part number", () => {
         const i = normalizeItem({ id: "x", qty: 5 });
-        expect(i).toMatchObject({ count: 5, merged: [], batchId: null, seq: 0, source: "manual" });
+        expect(i).toMatchObject({ count: 5, merged: [], batchId: null, seq: 0, source: "manual", flags: [], value: "" });
         expect(normalizeItem({ id: "y", qty: 5, count: 2 }).count).toBe(2);
+        expect(normalizeItem({ id: "z", mpn: "RC0805FR-0710KL" }).value).toBe("10k");
+        // A value that was cleared on purpose stays cleared.
+        expect(normalizeItem({ id: "z", mpn: "RC0805FR-0710KL", value: "" }).value).toBe("");
     });
 
-    test("the place is the box, else the bag, else the batch; unidentified scans have their own", () => {
+    test("records from before flags were kept are flagged unidentified by their source", () => {
+        expect(normalizeItem({ id: "a", source: "unknown", raw: "hello" }).flags).toEqual([UNIDENTIFIED]);
+        expect(normalizeItem({ id: "a", source: "photo" }).flags).toEqual([UNIDENTIFIED]);
+        expect(normalizeItem({ id: "a", source: "manual" }).flags).toEqual([]);
+        expect(normalizeItem({ id: "a", source: "unknown", flags: [] }).flags).toEqual([]);
+    });
+
+    test("a label counts once per place: the box, else the bag, else the batch", () => {
         const d = { bags };
         expect(scopeOf(item({ id: "a", bagId: "bag-1" }), d)).toBe("box-1");
         expect(scopeOf(item({ id: "a", bagId: "bag-2" }), d)).toBe("box-1");
         expect(scopeOf(item({ id: "a", bagId: "bag-3" }), d)).toBe("bag-3");
         expect(scopeOf(item({ id: "a", batchId: "batch-1" }), d)).toBe("batch-1");
         expect(scopeOf(item({ id: "a" }), d)).toBe("loose");
-        expect(scopeOf(item({ id: "a", bagId: "bag-1", source: "unknown" }), d)).toBe("unknown");
-        expect(scopeOf(item({ id: "a", bagId: "bag-1", source: "photo" }), d)).toBe("unknown");
+        expect(scopeOf(item({ id: "a", bagId: "bag-1", flags: [UNIDENTIFIED] }), d)).toBe("box-1");
     });
 
-    test("parts compare by manufacturer PN, then vendor PN, ignoring case; unidentified scans by their code", () => {
-        expect(partKey(item({ id: "a", mpn: "ne5532adr " }))).toBe("pn:NE5532ADR");
-        expect(partKey(item({ id: "a", vendorPn: "C14663" }))).toBe("pn:C14663");
-        expect(partKey(item({ id: "a" }))).toBe("");
-        expect(partKey(item({ id: "a", source: "unknown", raw: "hello" }))).toBe("raw:hello");
-        expect(partKey(item({ id: "a", source: "photo" }))).toBe(""); // every photo is a bag of its own
+    test("a rescan is the same label in the same box; the same part from another label is not", () => {
+        const a = item({ id: "a", mpn: "X", raw: "A", bagId: "bag-1" });
+        const old = item({ id: "o", mpn: "X", raw: "B", merged: ["C"], bagId: "bag-1" });
+        const d = { bags, items: [a, old] };
+        expect(findRescan(item({ id: "n", mpn: "X", raw: "A", bagId: "bag-2" }), d)?.id).toBe("a");
+        expect(findRescan(item({ id: "n", mpn: "X", raw: "C", bagId: "bag-1" }), d)?.id).toBe("o");
+        expect(findRescan(item({ id: "n", mpn: "X", raw: "D", bagId: "bag-1" }), d)).toBeUndefined();
+        expect(findRescan(item({ id: "n", mpn: "X", raw: "A", bagId: "bag-3" }), d)).toBeUndefined();
+        expect(findRescan(item({ id: "n", mpn: "X", raw: "", bagId: "bag-1" }), d)).toBeUndefined();
+        expect(findRescan(a, d)).toBeUndefined();
     });
 
-    test("codes with no part number and photos with no code wait to be identified; a part number or a name does it", () => {
-        expect(unidentifiedKind(item({ id: "a", source: "unknown" }))).toBe("code");
-        expect(unidentifiedKind(item({ id: "a", source: "photo" }))).toBe("photo");
-        expect(unidentifiedKind(item({ id: "a", source: "manual" }))).toBeNull();
-        expect(isUnidentified(item({ id: "a", source: "photo", bagId: "bag-1" }))).toBe(true);
+    test("unidentified is a flag: with a code or without, and a part number or a name identifies", () => {
+        const flagged = { flags: [UNIDENTIFIED] };
+        expect(unidentifiedKind(item({ id: "a", raw: "hello", ...flagged }))).toBe("code");
+        expect(unidentifiedKind(item({ id: "a", ...flagged }))).toBe("photo");
+        expect(unidentifiedKind(item({ id: "a", raw: "hello" }))).toBeNull();
+        expect(isUnidentified(item({ id: "a", bagId: "bag-1", ...flagged }))).toBe(true);
         expect(hasIdentity(item({ id: "a", notes: "white bag", raw: "hello" }))).toBe(false);
         expect(hasIdentity(item({ id: "a", name: "  " }))).toBe(false);
         expect(hasIdentity(item({ id: "a", name: "M3 screws" }))).toBe(true);
         expect(hasIdentity(item({ id: "a", vendorPn: "C14663" }))).toBe(true);
     });
 
-    test("a twin is the oldest other record of the part in the same box", () => {
-        const a = item({ id: "a", mpn: "X", bagId: "bag-1", created: 2 });
-        const b = item({ id: "b", mpn: "X", bagId: "bag-2", created: 1 });
-        const c = item({ id: "c", mpn: "X", bagId: "bag-3", created: 0 });
-        const d = { bags, items: [a, b, c] };
-        expect(findTwin(item({ id: "new", mpn: "x", bagId: "bag-1" }), d)?.id).toBe("b");
-        expect(findTwin(item({ id: "new", mpn: "X", bagId: "bag-3" }), d)?.id).toBe("c");
-        expect(findTwin(item({ id: "new", mpn: "Y", bagId: "bag-1" }), d)).toBeUndefined();
-        expect(findTwin(a, d)?.id).toBe("b");
+    test("sorted as scanned, or by type in the usual order, then value by size, then name", () => {
+        const list = [
+            item({ id: "ic", seq: 1, type: "ic", mpn: "NE5532" }),
+            item({ id: "r10k", seq: 2, type: "resistor", value: "10k", mpn: "B" }),
+            item({ id: "c", seq: 3, type: "capacitor", value: "100nF" }),
+            item({ id: "r1k", seq: 4, type: "resistor", value: "1k", mpn: "A" }),
+            item({ id: "none", seq: 5 }),
+            item({ id: "r", seq: 6, type: "resistor", mpn: "C" }),
+            item({ id: "own", seq: 7, type: "fuse" }),
+            item({ id: "r470", seq: 8, type: "Resistor", value: "470R" }),
+        ];
+        expect(sortItems(list, "scanned").map((i) => i.id)).toEqual(["ic", "r10k", "c", "r1k", "none", "r", "own", "r470"]);
+        expect(sortItems(list, "type").map((i) => i.id)).toEqual(["r470", "r1k", "r10k", "r", "c", "ic", "own", "none"]);
     });
 
-    test("merging sums bag quantity and count, fills blanks and remembers the code", () => {
-        const t = item({ id: "t", mpn: "X", qty: 10, count: 4, raw: "A", country: "" });
-        const m = mergeInto(t, item({ id: "n", mpn: "X", qty: 5, raw: "B", country: "CN", lot: "L1", notes: "n" }));
-        expect(m).toMatchObject({ id: "t", qty: 15, count: 9, country: "CN", lot: "L1", notes: "n", merged: ["B"] });
-        expect(mergeInto(t, item({ id: "n", mpn: "X", qty: null, raw: "C" }))).toMatchObject({ qty: 10, count: 4 });
-    });
-
-    test("the same label scanned again adds nothing", () => {
-        const t = item({ id: "t", mpn: "X", qty: 10, raw: "A", merged: ["B"] });
-        expect(isRescan(t, item({ id: "n", raw: "A" }))).toBe(true);
-        expect(isRescan(t, item({ id: "n", raw: "B" }))).toBe(true);
-        expect(isRescan(t, item({ id: "n", raw: "C" }))).toBe(false);
-        expect(isRescan(t, item({ id: "n", raw: "" }))).toBe(false);
-        expect(mergeInto(t, item({ id: "n", mpn: "X", qty: 10, raw: "A" }))).toBe(t);
-    });
-
-    test("ids and names", () => {
+    test("ids, names and search", () => {
         expect(itemTag({ seq: 12 })).toBe("I-12");
         expect(itemName(item({ id: "a", vendorPn: "C1" }))).toBe("C1");
         expect(itemName(item({ id: "a", raw: "a\x1db" }))).toBe("a b");
         expect(itemName(item({ id: "a" }))).toBe("(unnamed)");
-        expect(itemName(item({ id: "a", source: "photo" }))).toBe("(photo, no code)");
+        expect(itemName(item({ id: "a", flags: [UNIDENTIFIED] }))).toBe("(photo, no code)");
         expect(search("i-2", data).map((h) => h.id)).toEqual(["i2"]);
-        const photo = normalizeItem({ id: "p", seq: 3, source: "photo" });
-        expect(search("unidentified photo", { ...data, items: [...data.items, photo] }).map((h) => h.id)).toEqual(["p"]);
+        const photo = normalizeItem({ id: "p", seq: 3, flags: [UNIDENTIFIED] });
+        const cap = normalizeItem({ id: "c", seq: 4, mpn: "CL10B104KB8NNNC" });
+        const more = { ...data, items: [...data.items, photo, cap] };
+        expect(search("unidentified photo", more).map((h) => h.id)).toEqual(["p"]);
+        expect(search("100nf", more).map((h) => h.id)).toEqual(["c"]);
     });
 });

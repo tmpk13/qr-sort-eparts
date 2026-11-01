@@ -28,30 +28,34 @@ HTTPS, hence `serve-tls` for phones.
 - **Inventory**: pick or make the bag being filled, start the camera, hold each bag in view. With
   auto scan on, a bag is captured once it has settled in the frame and the next one only after it
   has been taken away. Auto save stores it at once; otherwise the parsed fields appear for checking.
-  A big sign over the picture says what happened: green saved, orange "it belongs in another bag"
-  or "already counted", magenta unidentified code, violet photo with no code. Scanning a bag label
-  switches to that bag, scanning a box label puts the current bag in that box. "Photo, no code" keeps
-  a picture of a bag whose code is missing or will not read. "Scan a photo" reads a picture instead
-  of the camera (and offers to keep it when nothing in it reads), "Add by hand" skips the code, the
-  slider zooms.
-- **One record per part per box**: a second bag of a part in the same box adds to the first one's
-  bag quantity and current count; the same label scanned twice is counted once. Items show a short
-  id (`I-12`).
+  A big sign over the picture says what happened: green saved, orange "already counted", magenta
+  saved unidentified with a code, violet saved unidentified with no code. Scanning a bag label
+  switches to that bag, scanning a box label puts the current bag in that box. "Retake last" takes
+  the photo of the bag saved last again. "Add by hand" is for a bag with no code that reads: take
+  its photo there and fill in what is known. "Scan a photo" reads a picture instead of the camera
+  (opening "Add by hand" with it when nothing in it reads); the slider zooms.
+- **One record per bag**: every bag scanned is a record of its own, even for a part already in the
+  box; the same label scanned twice in a box is counted once. Items show a short id (`I-12`) and
+  their value (`10k`, `100nF`), read from common resistor and capacitor part numbers and editable.
 - **Batch mode**: scans collect in a batch (date, time, random code) instead of a bag; "Put batch in
   bag" files them, "Clear batch" drops the batch and keeps the items.
-- **Unidentified codes and photos**: codes without a part number, and photos of bags with no code,
-  wait in two lists of their own under Browse. Putting one in a bag, or its bag in a box, leaves it
-  waiting; a part number or a name identifies it, and from then on it files like any item.
+- **Unidentified**: a code without a part number, or a bag added with only a photo, is saved where
+  it was scanned like any other, flagged unidentified. Moving it, or its bag, keeps the flag; a part
+  number or a name clears it. Browse also lists them all, codes and photos apart.
+- **Marker count**: write the current count on a bag with a colored marker. In Settings, click the
+  writing in a picture to pick the color and tune the sliders until the second picture shows only
+  the writing; with "Read marker count" on, each saved bag's count is read from its photo.
 - **Read text**: with no code in view for a while, the label's printed text is read; reads below the
   confidence set in Settings are not used.
 - **Find**: search by part number, name, type, bag or box. Pick a result, point the camera at the
   shelf: an arrow says how many boxes left or right, a check mark means this box (or this bag).
   Without a target, pointing at a label lists what is in it.
 - **Browse**: shelves, boxes (numbered left to right) and bags as a tree; edit names and places,
-  print labels, open items. "Not placed" collects anything without a home. Edit mode selects with
-  click and shift-click and moves items to a bag, bags to a box, boxes to a shelf. Export CSV.
-- **Settings**: the toggles, text confidence, the status LED, the bridge URL and label size, the
-  camera, backups, CSV, merging duplicates from older data.
+  print labels, open items. Items sort as scanned or by type then value, in each bag and in a box's
+  "All parts" list. "Not placed" collects anything without a home. Edit mode selects with click and
+  shift-click and moves items to a bag, bags to a box, boxes to a shelf. Export CSV.
+- **Settings**: the toggles, text confidence, the marker color, the status LED, the bridge URL and
+  label size, the camera, backups, CSV.
 
 ## Status LED (optional)
 
@@ -77,6 +81,9 @@ classDiagram
     class DecodeWorker { zxing-wasm readBarcodes() }
     class AutoCapture { feed(code, now) }
     class parse { parseCode() guessType() }
+    class value { valueFromPartNumber() valueNumber() }
+    class marker { isolate() readMarkerCount() }
+    class MarkerPanel { pick color, preview }
     class model { guide() search() qrPayload() }
     class Store { data, mutations }
     class Db { IndexedDB via idb }
@@ -84,7 +91,7 @@ classDiagram
     class printer { printerInfo() printPng() }
     class Bridge { bridge.py: static files, /api/printer, /api/print, /api/led }
     class tprint { UsbPrinter BtPrinter print_image() }
-    class ocr { readText() tesseract.js }
+    class ocr { readText() readDigits() tesseract.js }
     class led { ledSteady() ledFlash() }
     class LedLink { pyserial, 1209:0001 }
     class Firmware { RP2040 CDC-ACM, PWM GP2-4 }
@@ -100,6 +107,13 @@ classDiagram
     InventoryView --> AutoCapture
     InventoryView --> parse
     InventoryView --> ocr
+    InventoryView --> marker
+    InventoryView --> value
+    SettingsView --> MarkerPanel
+    MarkerPanel --> marker
+    BrowseView --> marker : read count
+    marker --> ocr : digits
+    model --> value : sort by value
     InventoryView --> led
     FindView --> led
     FindView --> nav : open in Browse
@@ -125,7 +139,7 @@ classDiagram
 ## Tests
 
 ```sh
-mise run test     # bun unit tests (parser, model, auto capture, labels, store, decoder, CSV) + pytest for the bridge
+mise run test     # bun unit tests (parser, values, marker, model, auto capture, labels, store, decoder, CSV) + pytest for the bridge
 mise run e2e      # the built app in Chromium with a fake camera showing bag codes
 mise run fw-test  # the LED firmware's line protocol, on this machine
 ```

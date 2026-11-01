@@ -84,7 +84,7 @@ describe.skipIf(!enabled)("app in a browser", () => {
             expect(await tree.textContent()).toContain("Box 1: Passives");
             expect(await tree.textContent()).toContain("Box 3: Connectors");
             await tree.getByText("Box 1: Passives").click();
-            await tree.getByText("Bag 1: 0805 resistors").waitFor();
+            await tree.locator("summary").filter({ hasText: "Bag 1: 0805 resistors" }).waitFor();
             await shot(page, "browse");
             await tree.getByRole("button", { name: "Label" }).first().click();
             const canvas = page.locator("canvas.label-preview");
@@ -123,7 +123,7 @@ describe.skipIf(!enabled)("app in a browser", () => {
             expect(await page.locator(".camera video").getAttribute("style")).toContain("scale(2)");
             await zoom.fill("1");
 
-            // The same part into another bag of the box that already holds it: pointed back to that bag.
+            // The same label again while filling another bag of the same box: counted once, and the sign says where.
             await page.getByRole("button", { name: "Stop camera" }).click();
             await page.getByLabel("Current bag").selectOption("bag-2");
             await page.getByRole("button", { name: "Start camera" }).first().click();
@@ -172,7 +172,7 @@ describe.skipIf(!enabled)("app in a browser", () => {
             await page.getByPlaceholder(/Part number/).fill("i-3");
             await page.locator(".list li.clickable").first().getByRole("button", { name: "Open" }).click();
             await page.locator(".modal").getByText("I-3 Single AND gate").waitFor();
-            expect(await page.locator(".tree li.focused").textContent()).toContain("I-3");
+            expect(await page.locator(".tree li.focused").first().textContent()).toContain("I-3");
             await shot(page, "browse-from-find");
         } finally {
             await browser.close();
@@ -190,7 +190,7 @@ describe.skipIf(!enabled)("app in a browser", () => {
             await page.getByRole("button", { name: "Start camera" }).first().click();
             const sign = page.locator(".camera .flash.ok");
             await sign.waitFor({ timeout: 20000 });
-            expect(await sign.textContent()).toBe("Saved I-4 GRM188R71H104KA93D");
+            expect(await sign.textContent()).toBe("Saved I-4 100nF GRM188R71H104KA93D");
             const batch = page.locator(".batch-box");
             await batch.getByText("1 items, 1 not in a bag").waitFor();
             expect(await batch.textContent()).toMatch(/Batch 1 [A-Z2-9]{4}/);
@@ -204,8 +204,8 @@ describe.skipIf(!enabled)("app in a browser", () => {
 
             await page.getByRole("button", { name: "Browse" }).click();
             await page.locator(".tree").getByText("Box 1: Passives").click();
-            await page.locator(".tree").getByText("Bag 2: Ceramic caps").click();
-            await page.locator(".tree").getByText("I-4 GRM188R71H104KA93D").waitFor();
+            await page.locator(".tree summary").filter({ hasText: "Bag 2: Ceramic caps" }).click();
+            await page.locator(".tree").getByText("I-4 100nF GRM188R71H104KA93D").waitFor();
             expect(await page.locator(".tree").textContent()).not.toContain("Batches");
         } finally {
             await browser.close();
@@ -213,74 +213,94 @@ describe.skipIf(!enabled)("app in a browser", () => {
         expect(errors).toEqual([]);
     }, 60000);
 
-    test("unidentified codes and photos wait apart, in a bag or not; edit mode moves a selection; CSV export", async () => {
+    test("unidentified codes and photos are filed where scanned, flagged; retake; edit mode; CSV export", async () => {
         const errors: string[] = [];
         const { browser, page } = await launch(await clip("hello world", "QRCode"), errors);
         try {
             await loadSample(page, site.url);
             await page.getByRole("button", { name: "Inventory" }).click();
             await page.getByRole("button", { name: "Start camera" }).first().click();
-            await page.locator(".camera .flash.unknown").waitFor({ timeout: 20000 });
+            const unknownSign = page.locator(".camera .flash.unknown");
+            await unknownSign.waitFor({ timeout: 20000 });
+            expect(await unknownSign.textContent()).toBe("Unidentified: I-4 in Bag 1: 0805 resistors");
             await page.getByText("1 unidentified code waits to be identified.").waitFor();
             await shot(page, "unidentified");
-            await page.getByRole("button", { name: "Photo, no code" }).click();
-            await page.locator(".camera .flash.nocode").waitFor();
+            // Keep the code in view from being taken again while the rest is done by hand.
+            await page.getByLabel("Auto scan").uncheck();
+
+            await page.getByRole("button", { name: "Retake last (I-4)" }).click();
+            await page.getByText("New photo for I-4 hello world").waitFor();
+
+            // Added by hand with a photo and nothing else: an unidentified photo in the bag being filled.
+            await page.getByRole("button", { name: "Add by hand" }).click();
+            const draft = page.locator(".panel.draft");
+            await draft.getByRole("button", { name: "Take photo" }).click();
+            await draft.locator("img.photo").waitFor();
+            expect(await draft.textContent()).toContain("goes into Bag 1: 0805 resistors flagged unidentified");
+            await draft.getByRole("button", { name: "Save" }).click();
+            const photoSign = page.locator(".camera .flash.nocode");
+            await photoSign.waitFor();
+            expect(await photoSign.textContent()).toBe("No code: I-5 in Bag 1: 0805 resistors, unidentified");
             await page.getByText("1 unidentified code and 1 photo with no code wait to be identified.").waitFor();
             await shot(page, "photo-no-code");
             await page.getByRole("button", { name: "Stop camera" }).click();
 
             await page.getByRole("button", { name: "Browse" }).click();
-            const unknown = page.locator(".tree details.unknown");
-            const photos = page.locator(".tree details.nocode");
-            expect(await unknown.textContent()).toContain("I-4 hello world");
-            expect(await photos.textContent()).toContain("I-5 (photo, no code)not in a bag");
+            const tree = page.locator(".tree");
+            const unknown = tree.locator("details.unknown");
+            const photos = tree.locator("details.nocode");
+            expect(await unknown.textContent()).toContain("I-4 hello world unidentifiedBag 1: 0805 resistors");
+            expect(await photos.textContent()).toContain("I-5 (photo, no code) unidentifiedBag 1: 0805 resistors");
             await photos.locator("img.thumb").waitFor();
-            expect(await page.locator(".tree").getByText("Bag 1: 0805 resistors").count()).toBe(1);
+            // They are in the bag they were scanned into, marked.
+            await tree.locator("summary").filter({ hasText: "Box 1: Passives" }).click();
+            const bag = (name: string) => tree.locator(`xpath=.//details[summary[contains(., '${name}')]]`);
+            await bag("Bag 1: 0805 resistors").locator("summary").first().click();
+            expect(await bag("Bag 1: 0805 resistors").locator("xpath=./summary").textContent())
+                .toContain("4 items, 2 unidentified");
+            await bag("Bag 1: 0805 resistors").locator("li.unknown").filter({ hasText: "I-4 hello world" }).waitFor();
+            await bag("Bag 1: 0805 resistors").locator("li.nocode").filter({ hasText: "I-5 (photo, no code)" }).waitFor();
+            await shot(page, "browse-unidentified");
 
+            // Edit mode moves them with the rest; the flag stays.
             await page.getByRole("button", { name: "Edit mode" }).click();
             const list = page.locator(".edit-list");
             await list.locator("li.item").filter({ hasText: "I-1 " }).click();
             await list.locator("li.item").filter({ hasText: "I-3 " }).click({ modifiers: ["Shift"] });
-            expect(await list.locator("li.selected").count()).toBe(3);
+            expect(await list.locator("li.selected").count()).toBe(5);
             await shot(page, "edit-mode");
             await page.getByLabel("Move items to bag").selectOption("bag-2");
             await page.getByRole("button", { name: "Move items" }).click();
-            await page.getByText("Moved 3 items to Bag 2: Ceramic caps").waitFor();
-            // The unidentified records go into the bag too, and stay unidentified under their own headings.
-            await list.locator("li.item").filter({ hasText: "I-4 " }).click();
-            await list.locator("li.item").filter({ hasText: "I-5 " }).click();
-            await page.getByLabel("Move items to bag").selectOption("bag-2");
-            await page.getByRole("button", { name: "Move items" }).click();
-            await page.getByText("Moved 2 items to Bag 2: Ceramic caps").waitFor();
-            await list.locator("li.item.unknown").filter({ hasText: "I-4 hello world (in Bag 2: Ceramic caps)" }).waitFor();
-            await list.locator("li.item.nocode").filter({ hasText: "I-5 (photo, no code) (in Bag 2: Ceramic caps)" }).waitFor();
+            await page.getByText("Moved 5 items to Bag 2: Ceramic caps").waitFor();
+            await list.locator("li.item.unknown").filter({ hasText: "I-4 hello world (unidentified)" }).waitFor();
+            await list.locator("li.item.nocode").filter({ hasText: "I-5 (photo, no code) (unidentified)" }).waitFor();
             await page.getByRole("button", { name: "Done editing" }).click();
-            expect(await unknown.textContent()).toContain("I-4 hello worldBag 2: Ceramic caps");
-            expect(await photos.textContent()).toContain("I-5 (photo, no code)Bag 2: Ceramic caps");
-            await page.locator(".tree summary").filter({ hasText: "Box 1: Passives" }).click();
-            await page.locator(".tree summary").filter({ hasText: "Bag 2: Ceramic caps" }).click();
-            await page.locator(".tree").getByText("I-3 Single AND gate").waitFor();
-            const bag2 = page.locator(".tree").locator("xpath=.//details[summary[contains(., 'Bag 2: Ceramic caps')]]");
-            expect(await bag2.locator("xpath=./summary").textContent()).toContain("3 items, 2 to identify");
-            await shot(page, "browse-unidentified");
+            expect(await unknown.textContent()).toContain("I-4 hello world unidentifiedBag 2: Ceramic caps");
+            await tree.locator("summary").filter({ hasText: "Box 1: Passives" }).click();
+            await bag("Bag 2: Ceramic caps").locator("xpath=./summary").click();
+            await tree.getByText("I-3 Single AND gate").waitFor();
+            expect(await bag("Bag 2: Ceramic caps").locator("xpath=./summary").textContent())
+                .toContain("5 items, 2 unidentified");
 
-            // A name identifies the photo: it leaves its heading and files into its bag like any item.
+            // A name identifies the photo: the flag goes, it stays in its bag.
             await photos.getByText("I-5 (photo, no code)").click();
             await page.locator(".modal").getByText("Photo of a bag with no code").waitFor();
             await page.locator(".modal").getByLabel("Name / description").fill("Mystery caps");
             await page.locator(".modal").getByRole("button", { name: "Save" }).click();
             await photos.waitFor({ state: "detached" });
-            await bag2.getByText("I-5 Mystery caps").waitFor();
-            expect(await bag2.locator("xpath=./summary").textContent()).toContain("4 items, 1 to identify");
+            await bag("Bag 2: Ceramic caps").getByText("I-5 Mystery caps").waitFor();
+            expect(await bag("Bag 2: Ceramic caps").locator("xpath=./summary").textContent())
+                .toContain("5 items, 1 unidentified");
 
             const download = page.waitForEvent("download");
             await page.getByRole("button", { name: "Export CSV" }).click();
             const csv = await Bun.file((await (await download).path())!).text();
             const lines = csv.trim().split("\r\n");
-            expect(lines[0]).toStartWith("id,type,name,mpn,vendor_pn,bag_qty,count,");
+            expect(lines[0]).toStartWith("id,type,value,name,mpn,vendor_pn,bag_qty,count,");
             expect(lines).toHaveLength(6);
-            expect(csv).toContain("I-4,,,,,,,,,,unknown,Bag 2: Ceramic caps,Box 1: Passives,");
-            expect(csv).toContain("I-5,,Mystery caps,,,,,,,,manual,Bag 2: Ceramic caps,Box 1: Passives,");
+            expect(csv).toContain("I-1,resistor,10k,,RC0805FR-0710KL,");
+            expect(csv).toContain("I-4,,,,,,,,,,,unknown,unidentified,Bag 2: Ceramic caps,Box 1: Passives,");
+            expect(csv).toContain("I-5,,,Mystery caps,,,,,,,,manual,,Bag 2: Ceramic caps,Box 1: Passives,");
         } finally {
             await browser.close();
         }
@@ -309,13 +329,13 @@ describe.skipIf(!enabled)("app in a browser", () => {
             const file = join(work, "label-text.png");
             await Bun.write(file, Buffer.from(png, "base64"));
             await page.getByLabel("Read text").check();
-            await page.locator('input[type="file"][accept="image/*"]').setInputFiles(file);
+            await page.getByLabel("Scan a photo").setInputFiles(file);
             const sign = page.locator(".camera .flash.ok");
             await page.getByText(/Saved I-4 SN74LVC1G08DBVR x25/).first().waitFor({ timeout: 45000 });
             expect(await sign.count()).toBe(0); // the camera is off, so the sign is not drawn
             await page.getByRole("button", { name: "Browse" }).click();
             await page.locator(".tree").getByText("Box 1: Passives").click();
-            await page.locator(".tree").getByText("Bag 1: 0805 resistors").click();
+            await page.locator(".tree summary").filter({ hasText: "Bag 1: 0805 resistors" }).click();
             await page.locator(".tree").getByText("I-4 SN74LVC1G08DBVR").click();
             const modal = page.locator(".modal");
             expect(await modal.locator("input.mono").first().inputValue()).toBe("SN74LVC1G08DBVR");
@@ -326,12 +346,18 @@ describe.skipIf(!enabled)("app in a browser", () => {
         expect(errors).toEqual([]);
     }, 90000);
 
-    test("a chosen photo with nothing to read is offered as a photo with no code", async () => {
+    test("by hand: nothing to save without a photo or a name; a photo where nothing reads opens the form", async () => {
         const errors: string[] = [];
         const { browser, page } = await launch(await clip("qrsort:box:1", "QRCode"), errors);
         try {
             await loadSample(page, site.url);
             await page.getByRole("button", { name: "Inventory" }).click();
+            await page.getByRole("button", { name: "Add by hand" }).click();
+            const draft = page.locator(".panel.draft");
+            await draft.getByRole("button", { name: "Save" }).click();
+            await page.getByText("Take a photo, or fill in a part number or a name").waitFor();
+            await draft.getByRole("button", { name: "Discard" }).click();
+
             const png = await page.evaluate(() => {
                 const c = document.createElement("canvas");
                 c.width = 640;
@@ -345,19 +371,164 @@ describe.skipIf(!enabled)("app in a browser", () => {
             });
             const file = join(work, "plain-bag.png");
             await Bun.write(file, Buffer.from(png, "base64"));
-            await page.locator('input[type="file"][accept="image/*"]').setInputFiles(file);
-            const draft = page.locator(".panel.nocode").filter({ hasText: "Photo, no code" });
+            await page.getByLabel("Scan a photo").setInputFiles(file);
+            await draft.getByText("Add by hand").waitFor();
             await draft.locator("img.photo").waitFor();
+            expect(await draft.getAttribute("class")).toContain("nocode");
             await draft.getByRole("button", { name: "Save" }).click();
             await page.getByText("1 photo with no code waits to be identified.").waitFor();
-            await page.getByText("No code: photo I-4 kept apart").first().waitFor();
+            await page.getByText("No code: I-4 in Bag 1: 0805 resistors, unidentified").first().waitFor();
             await page.getByRole("button", { name: "Browse" }).click();
             const photos = page.locator(".tree details.nocode");
-            expect(await photos.textContent()).toContain("I-4 (photo, no code)not in a bag");
+            expect(await photos.textContent()).toContain("I-4 (photo, no code) unidentifiedBag 1: 0805 resistors");
             await photos.locator("img.thumb").waitFor();
         } finally {
             await browser.close();
         }
         expect(errors).toEqual([]);
     }, 60000);
+
+    test("values in the lists, sorting by type in a bag and in a whole box", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("qrsort:box:1", "QRCode"), errors);
+        try {
+            await loadSample(page, site.url);
+            await page.getByRole("button", { name: "Browse" }).click();
+            const tree = page.locator(".tree");
+            await tree.locator("summary").filter({ hasText: "Box 1: Passives" }).click();
+            const bag1 = tree.locator("xpath=.//details[summary[contains(., 'Bag 1: 0805 resistors')]]");
+            await bag1.locator("xpath=./summary").click();
+            const firstTitle = () => bag1.locator("li .title").first().textContent();
+            await bag1.getByText("I-1 10k RC0805FR-0710KL").waitFor();
+            expect(await firstTitle()).toBe("I-1 10k RC0805FR-0710KL");
+            await page.getByLabel("Sort items").selectOption("type");
+            await bag1.locator("li .title").first().filter({ hasText: "I-2 1k" }).waitFor();
+            expect(await bag1.locator("li .title").allTextContents()).toEqual(["I-2 1k RC0805FR-071KL", "I-1 10k RC0805FR-0710KL"]);
+            // The whole box in one list: drawn once opened, in the same order, each with its bag.
+            const parts = tree.locator("details.box-parts").first();
+            expect(await parts.locator("li").count()).toBe(0);
+            await parts.locator("summary").click();
+            await parts.locator("li").first().waitFor();
+            expect(await parts.locator("li .title").allTextContents()).toEqual(["I-2 1k RC0805FR-071KL", "I-1 10k RC0805FR-0710KL"]);
+            expect(await parts.locator("li").first().textContent()).toContain("Bag 1: 0805 resistors");
+            await shot(page, "sorted-by-type");
+            await page.getByRole("button", { name: "Inventory" }).click();
+            await page.locator(".list").last().getByText("I-1 10k RC0805FR-0710KL").waitFor();
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 60000);
+
+    test("marker color: picked in a picture, isolated, and a count written in it read on a scan", async () => {
+        const errors: string[] = [];
+        const { browser, page } = await launch(await clip("qrsort:box:1", "QRCode"), errors);
+        try {
+            await loadSample(page, site.url);
+            // A bag: pink plastic, a printed label, and "37" written on it in red.
+            const bagPng = await page.evaluate(() => {
+                const c = document.createElement("canvas");
+                c.width = 800;
+                c.height = 500;
+                const ctx = c.getContext("2d")!;
+                ctx.fillStyle = "#f8bccb";
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.fillStyle = "#fff";
+                ctx.fillRect(40, 40, 440, 200);
+                ctx.fillStyle = "#111";
+                ctx.font = "28px sans-serif";
+                ["DIGI-KEY PART NO.: 296-8286-1-ND", "QTY: 100"].forEach((t, i) => ctx.fillText(t, 60, 100 + i * 50));
+                ctx.fillStyle = "#c81e1e";
+                ctx.font = "bold 150px sans-serif";
+                ctx.fillText("37", 520, 420);
+                return c.toDataURL("image/png").split(",")[1];
+            });
+            const bagFile = join(work, "marker-bag.png");
+            await Bun.write(bagFile, Buffer.from(bagPng, "base64"));
+            await page.getByRole("button", { name: "Settings" }).click();
+            const panel = page.locator(".panel.marker");
+            await panel.getByLabel("Choose a picture").setInputFiles(bagFile);
+            const pick = panel.locator("canvas.marker-pick");
+            await pick.waitFor();
+            // A pixel well inside the red writing: red all around it.
+            const spot = await pick.evaluate((c: HTMLCanvasElement) => {
+                const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+                const red = (x: number, y: number) => {
+                    const i = (y * c.width + x) * 4;
+                    return d[i] > 170 && d[i + 1] < 70 && d[i + 2] < 70;
+                };
+                for (let y = 4; y < c.height - 4; y++) {
+                    for (let x = 4; x < c.width - 4; x++) {
+                        if (red(x, y) && red(x - 4, y) && red(x + 4, y) && red(x, y - 4) && red(x, y + 4)) {
+                            return { x: (x + 0.5) / c.width, y: (y + 0.5) / c.height };
+                        }
+                    }
+                }
+                return null;
+            });
+            expect(spot).not.toBeNull();
+            const box = (await pick.boundingBox())!;
+            await pick.click({ position: { x: spot!.x * box.width, y: spot!.y * box.height } });
+            await panel.locator(".swatch").waitFor();
+            // Only the writing is left in the second picture: no pink bag, no black print.
+            const preview = panel.locator("canvas.marker-preview");
+            await page.waitForTimeout(300);
+            const kept = await preview.evaluate((c: HTMLCanvasElement) => {
+                const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+                let ink = 0;
+                let pink = 0;
+                let dark = 0;
+                for (let i = 0; i < d.length; i += 4) {
+                    const [r, g, b] = [d[i], d[i + 1], d[i + 2]];
+                    ink += Number(r > 150 && g < 100 && b < 100);
+                    pink += Number(r > 230 && g > 170 && g < 240 && b > 180 && b < 245);
+                    dark += Number(r < 80 && g < 80 && b < 80);
+                }
+                return { ink, pink, dark };
+            });
+            expect(kept.ink).toBeGreaterThan(1000);
+            expect(kept.pink).toBeLessThan(50);
+            expect(kept.dark).toBeLessThan(50);
+            await shot(page, "marker");
+            await panel.getByRole("button", { name: "Read count" }).click();
+            const result = panel.locator(".badge[role=status]");
+            await result.waitFor({ timeout: 45000 });
+            expect(await result.textContent()).toMatch(/^Read 37 at \d+% confidence$/);
+
+            // A scanned bag with 52 written next to its code: the count comes from the marker.
+            await panel.getByLabel("Read the count written in this color when a bag is saved").check();
+            // DK_OLD is a rectangular symbol, 66 by 26 modules: 396 by 156 pixels at scale 6.
+            const code = await writeBarcode(DK_OLD, { format: "DataMatrix", scale: 6 });
+            const codeB64 = Buffer.from(await code.image!.arrayBuffer()).toString("base64");
+            const scanPng = await page.evaluate(async (b64: string) => {
+                const img = new Image();
+                img.src = `data:image/png;base64,${b64}`;
+                await img.decode();
+                const c = document.createElement("canvas");
+                c.width = 900;
+                c.height = 500;
+                const ctx = c.getContext("2d")!;
+                ctx.fillStyle = "#fff";
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.drawImage(img, 40, 40);
+                ctx.fillStyle = "#c81e1e";
+                ctx.font = "bold 150px sans-serif";
+                ctx.fillText("52", 560, 400);
+                return c.toDataURL("image/png").split(",")[1];
+            }, codeB64);
+            const scanFile = join(work, "marker-scan.png");
+            await Bun.write(scanFile, Buffer.from(scanPng, "base64"));
+            await page.getByRole("button", { name: "Inventory" }).click();
+            await page.getByLabel("Scan a photo").setInputFiles(scanFile);
+            await page.getByText("Saved I-4 SN74LVC1G08DBVR x10").first().waitFor({ timeout: 20000 });
+            const counted = page.getByText(/^(Count \d+ read from the marker for I-4|Marker count .*|Reading the marker failed.*)$/);
+            await counted.first().waitFor({ timeout: 45000 });
+            expect(await counted.first().textContent()).toBe("Count 52 read from the marker for I-4");
+            const row = page.locator(".list").last().locator("li").filter({ hasText: "I-4" });
+            await row.getByText("x52/10").waitFor();
+        } finally {
+            await browser.close();
+        }
+        expect(errors).toEqual([]);
+    }, 120000);
 });

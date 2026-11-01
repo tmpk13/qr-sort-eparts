@@ -67,47 +67,66 @@ gantt
   which exercises the real camera, worker and capture path. Playwright's own downloader fails
   under bun with `ERR_TLS_CERT_ALTNAME_INVALID`; the zips from its `--dry-run` URLs unpacked into
   `~/.cache/ms-playwright/<name>/` with an `INSTALLATION_COMPLETE` marker work.
-- **One record per part per box**: a part number may appear once per place, the place being the
-  box when the bag is in one, else the bag, else the batch, else "loose". A save that finds an
-  earlier record of the same part there (manufacturer PN, else vendor PN, case-insensitive) adds to
-  it: bag quantity and current count are summed, blanks filled, the earlier record keeps its bag,
-  number and photo. Every raw code merged in is remembered, so the same label scanned twice adds
-  nothing ("already counted"); distinct labels of one order line still add. When the earlier record
-  sits in another bag of the box, the user is told to put the bag there. Moving a whole bag into a
-  box does not merge (the parts physically stay in their bags); "Merge duplicates" does, and also
-  cleans up older data. The real export in test-data/ goes from 56 records to 41.
-- **Bag quantity vs count**: `qty` is what the labels said (summed over merged bags), `count` the
-  number on hand, starting equal. Older records get `count = qty` when read.
+- **One record per bag**: an earlier version kept one record per part number per box and summed
+  the quantities of later bags into it. That hid how many bags there were and what each held, so
+  every bag is now a record of its own. What stays is the rescan check: a new record whose label
+  (its raw code, or a code an earlier version summed in, kept in `merged`) is already recorded in
+  the same place (the box, else the bag, else the batch, else "loose") is not saved again ("already
+  counted"); autofocus hunting and a bag shown twice would otherwise double it. Moving items never
+  combines them. Records summed by the earlier version keep their totals; their labels' own
+  quantities are still in `raw` and `merged` if they ever need splitting.
+- **Bag quantity vs count**: `qty` is what the label said, `count` the number on hand, starting
+  equal. Older records get `count = qty` when read.
 - **Item numbers**: items keep their UUID key; `seq` is the short id shown as `I-12`, from an "item"
   counter. Database version 2 numbers existing items in creation order inside the upgrade
   transaction; restoring a version 1 backup does the same after the highest number present.
-- **Waiting to be identified**: two kinds, listed apart: a code that yields no part number (source
-  "unknown", keyed by its raw text so a repeat does not duplicate it) and a photo of a bag with no
-  code (source "photo", never merged, since every photo is a bag of its own). Both are saved outside
-  any bag and batch. Placement is independent of the state: moving one to a bag, or its bag to a
-  box, leaves it waiting (placing one by hand used to accept it as an item, filing a code's raw
-  text as if it were a part). Only a part number or a name identifies it, and that rule sits in
-  the store's `put`, so the draft, the item dialog and edit mode cannot disagree. A waiting record
-  is not listed in its bag, only counted there ("2 to identify"); deleting the bag still deletes
-  it, so the confirmation counts it too.
-- **Photo with no code is a button**: without a code there is nothing to tell a bag in view from an
-  empty table, so auto capture cannot take it. The photo is kept whether or not "Save photo" is on.
-  A picture chosen with "Scan a photo" in which nothing reads becomes a draft to save or discard,
-  not a record, since it may just be a bad shot.
-- **Backups and photos**: backups leave photos out (as before), so a photo with no code comes back
-  from a restore as an empty record. Identify those before relying on a backup.
+- **Unidentified is a flag**: keeping unidentified scans out of the bag being filled lost track of
+  where those bags went, so they are now saved where they were scanned and carry an "unidentified"
+  entry in `flags`. The store sets it on a new record with neither a part number nor a name, and
+  clears it when one appears; moving the record, or its bag, never touches it. That rule lives in
+  the store's `put`, so the draft, the item dialog and edit mode cannot disagree. The kind is
+  derived: with a raw code it is an unidentified code (magenta), without one a bag added with a
+  photo (violet). Records from before flags get the flag from their source ("unknown" or "photo")
+  when read. Browse lists them in their bags and also in two lists of their own.
+- **No automatic photo**: without a code there is nothing to tell a bag in view from an empty
+  table, so a bag with no code is added by hand, where the form can take the camera's picture or a
+  chosen one. A by-hand record with no code, no photo, no part number and no name is refused, as
+  nothing could identify it later. A picture chosen with "Scan a photo" in which nothing reads opens
+  that form with it rather than saving it, since it may just be a bad shot.
+- **Backups and photos**: backups leave photos out, so a bag added with only a photo comes back
+  from a restore with nothing to identify it by. Identify those before relying on a backup.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Code: code, no part number
-    [*] --> Photo: Photo, no code
-    [*] --> Item: code with a part number
-    Code --> Code: put in a bag, bag put in a box
-    Photo --> Photo: put in a bag, bag put in a box
+    [*] --> Photo: added by hand, photo only
+    [*] --> Item: code with a part number, or a name given
+    Code --> Code: moved, or its bag moved
+    Photo --> Photo: moved, or its bag moved
     Code --> Item: part number or name
     Photo --> Item: part number or name
-    Item --> Item: merged into the record of its part in the box
 ```
+
+- **Values**: none of the bag codes carry the component value, so it is read from the part number
+  for the common resistor and capacitor families (Yageo RC/CC, Vishay CRCW, Panasonic ERJ/ECJ,
+  Stackpole, KOA, Bourns, UniOhm, TDK, KEMET, Samsung CL, Murata GRM, AVX) and from a label
+  description ("RES 10K OHM", "CAP CER 0.1UF"), where the word in front picks the unit so an
+  inductor's resistance is not taken for its value. TDK's pattern is tried before KEMET's: KEMET's
+  shape also matches TDK numbers, reading the dielectric "X7R" as the value 7.1 pF. Values are
+  written with an engineering prefix ("4.7k", "100R", "100nF", "2200uF"), parsed back to numbers
+  for sorting, and filled in once for older records; a value cleared by hand stays cleared.
+- **Sorting by type**: types in the order of the type list (passives first), ones typed in by hand
+  after, none last; then value by size; then name, with unidentified records last. A box's
+  "All parts" list is drawn only while open, so its photos are not loaded twice for every box.
+- **Marker count**: the count written on a bag in a colored marker is read by keeping pixels of
+  the picked color (hue within a range, a saturation floor, a brightness band, at a working size of
+  1000 pixels), dropping ink areas too small to be writing, cutting the rest out black on white and
+  reading digits. Tesseract misread a clean bold "52" about 106 px tall as "92" at 72% and found
+  nothing in sparse-text mode (PSM 11) in a tight crop, while the same digits scaled to about 40 px
+  read correctly at 96%: so the cut-out is scaled to 40 px of ink height and read as one block
+  (PSM 6). The default minimum confidence is 70 for that reason. Black ink cannot be told from the
+  printed label, so a colored marker is needed. The digit read shares the text reader's worker:
+  tesseract.js applies parameters given to `recognize` for that job only.
 - **1D barcodes**: only data-identifier fields count (1P, 30P, P, Q, 9D, 1T, 4L, K..., 1V), joined
   across the codes in one frame into an ISO 15434 message, and only when they name a part: 1P/30P,
   a P ending in -ND, or P with Q. Without that, a plain part number like "PIC16F84A" would read as

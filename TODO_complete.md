@@ -24,8 +24,19 @@
 - Batches: start/new, batch mode, put in bag, clear without losing items.
 - Browse edit mode: click and shift-click selection, move items/bags/boxes.
 - Find results open the item in Browse; short item ids (I-12) everywhere, searchable.
-- One record per part number per box, with rescan detection and a merge for older data.
+- One record per part number per box, with rescan detection and a merge for older data (replaced:
+  every bag is its own record, below).
 - RP2040 status LED firmware (GP2/3/4, USB CDC-ACM) and bridge /api/led, optional.
-- Photos of bags with no code ("Photo, no code", or a chosen photo where nothing reads), in their own
-  list with a violet sign and LED color; unidentified codes and photos stay unidentified when put in
-  a bag or their bag in a box, until given a part number or a name.
+- Photos of bags with no code, in their own list with a violet sign and LED color; unidentified codes
+  and photos stay unidentified when moved, until given a part number or a name (the button became
+  part of "Add by hand", below).
+- Unidentified is a flag on items filed where they were scanned; it stays through moves until a part
+  number or a name is given. Codes and photos listed apart as well.
+- "Add by hand" takes a photo (camera or file); "Scan a photo" opens it when nothing reads.
+- Every bag is its own record (no quantity summing); the same label in a box counts once.
+- Component values read from common resistor/capacitor part numbers and label descriptions, shown in
+  the lists and the CSV.
+- Sorting by type then value in bags, a box's "All parts" list and edit mode.
+- "Retake last" replaces the photo of the bag saved last.
+- Marker count: pick the marker color in a picture, tune with a live isolated preview, read the
+  written count on each saved bag (and from an item's photo in Browse).
